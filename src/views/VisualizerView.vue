@@ -6,9 +6,23 @@ import { formatCount, type Dataset } from '../datasets'
 defineProps<{ datasets: readonly Dataset[] }>()
 const dataset = defineModel<Dataset>({ required: true })
 const emit = defineEmits<{ back: [] }>()
+const mode = ref<'neighborhood' | 'shortest-path'>('neighborhood')
+const origin = ref('')
+const destination = ref('')
 const distanceLevel = ref(2)
 const pickerOpen = ref(false)
 const pickerTrigger = ref<HTMLButtonElement | null>(null)
+
+function swapProteins() {
+  const previousOrigin = origin.value
+  origin.value = destination.value
+  destination.value = previousOrigin
+}
+
+function resetPath() {
+  origin.value = ''
+  destination.value = ''
+}
 
 function closePicker() {
   pickerOpen.value = false
@@ -34,41 +48,53 @@ function dismissPickerOnBlur(event: FocusEvent) {
       <aside class="glass-panel parameters-panel">
         <BackToMenu @back="emit('back')" />
         <h2>Parámetros</h2>
-        <div class="mode-switch" aria-label="Modo de exploración">
-          <button type="button" class="selected">Explorar entorno</button>
-          <button type="button">Camino más corto</button>
-        </div>
-
-        <label class="field-label" for="protein-id">Identificador de proteína</label>
-        <input id="protein-id" class="protein-input" type="text" placeholder="Ejemplo: 7157" />
-
         <label class="field-label" for="node-limit">Límite máximo de nodos</label>
-        <input id="node-limit" class="protein-input" type="number" placeholder="100" />
+        <input id="node-limit" class="protein-input" type="number" min="1" max="1500" placeholder="100" />
+        <button class="graph-action" type="button" disabled>Generar grafo</button>
+        <p class="node-note">Hasta 1500 nodos para una visualización óptima.</p>
 
-        <div class="distance-control">
-          <div class="distance-heading">
-            <label class="field-label" for="distance-level">Distancia máxima</label>
-            <span class="level-badge" aria-hidden="true">Nivel {{ distanceLevel }}</span>
-          </div>
-          <input
-            id="distance-level"
-            v-model.number="distanceLevel"
-            class="distance-range"
-            type="range"
-            min="1"
-            max="3"
-            :aria-valuetext="`Nivel ${distanceLevel}`"
-            :style="{ '--range-fill': `${(distanceLevel - 1) * 50}%` }"
-          />
-          <div class="range-values" aria-hidden="true">
-            <span v-for="level in 3" :key="level" :class="{ 'current-level': level === distanceLevel }">{{ level }}</span>
-          </div>
+        <div class="mode-switch" aria-label="Modo de exploración">
+          <button type="button" :aria-pressed="mode === 'neighborhood'" @click="mode = 'neighborhood'">Explorar entorno</button>
+          <button type="button" :aria-pressed="mode === 'shortest-path'" @click="mode = 'shortest-path'">Camino más corto</button>
         </div>
 
-        <button class="generate-button" type="button" aria-label="Generar subgrafo">
-          <img src="/images/generate_button.png" alt="" />
-        </button>
-        <p class="node-note">Hasta 1500 nodos para una visualización óptima.</p>
+        <div v-show="mode === 'neighborhood'" class="mode-fields">
+          <label class="field-label" for="protein-id">Identificador de proteína</label>
+          <input id="protein-id" class="protein-input" type="text" placeholder="Ejemplo: 7157" />
+
+          <div class="distance-control">
+            <div class="distance-heading">
+              <label class="field-label" for="distance-level">Distancia máxima</label>
+              <span class="level-badge" aria-hidden="true">Nivel {{ distanceLevel }}</span>
+            </div>
+            <input
+              id="distance-level"
+              v-model.number="distanceLevel"
+              class="distance-range"
+              type="range"
+              min="1"
+              max="3"
+              :aria-valuetext="`Nivel ${distanceLevel}`"
+              :style="{ '--range-fill': `${(distanceLevel - 1) * 50}%` }"
+            />
+            <div class="range-values" aria-hidden="true">
+              <span v-for="level in 3" :key="level" :class="{ 'current-level': level === distanceLevel }">{{ level }}</span>
+            </div>
+          </div>
+
+          <button class="graph-action" type="button" disabled>Generar subgrafo</button>
+        </div>
+
+        <div v-show="mode === 'shortest-path'" class="mode-fields">
+          <label class="field-label" for="origin-protein">Proteína de origen</label>
+          <input id="origin-protein" v-model="origin" class="protein-input" type="text" placeholder="Ejemplo: 7157" />
+          <button class="swap-button" type="button" aria-label="Intercambiar origen y destino" @click="swapProteins">
+            <span aria-hidden="true">⇅</span>
+          </button>
+          <label class="field-label" for="destination-protein">Proteína de destino</label>
+          <input id="destination-protein" v-model="destination" class="protein-input" type="text" placeholder="Ejemplo: 5728" />
+          <button class="graph-action" type="button" disabled>Encontrar camino</button>
+        </div>
       </aside>
 
       <section class="glass-panel graph-panel" aria-label="Área del grafo">
@@ -122,12 +148,18 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
         <div class="empty-graph">
           <img class="mascot" src="/images/mascot.png" alt="Mascota de Prote-Prote" />
-          <h2>Ingresa un identificador para<br />explorar sus conexiones</h2>
-          <p>Selecciona la distancia máxima desde la proteína y el<br class="wide-break" /> límite de nodos</p>
+          <template v-if="mode === 'neighborhood'">
+            <h2>Explora las conexiones de una proteína</h2>
+            <p>Ingresa su identificador y selecciona la distancia máxima para el subgrafo.</p>
+          </template>
+          <template v-else>
+            <h2>Camino más corto</h2>
+            <p>Ingresa las proteínas de origen y destino para consultar la ruta.</p>
+          </template>
         </div>
       </section>
 
-      <aside class="glass-panel details-panel">
+      <aside v-if="mode === 'neighborhood'" class="glass-panel details-panel">
         <h2>Detalles de la proteína</h2>
         <p class="details-intro">Selecciona un nodo del grafo para ver sus detalles.</p>
         <dl class="protein-details">
@@ -137,6 +169,19 @@ function dismissPickerOnBlur(event: FocusEvent) {
           <div><dt>Componente conectado</dt><dd>--</dd></div>
           <div><dt>Tamaño conectado</dt><dd>--</dd></div>
         </dl>
+      </aside>
+      <aside v-else class="glass-panel details-panel">
+        <h2>Resultados del camino</h2>
+        <dl class="protein-details">
+          <div><dt>Proteína inicial</dt><dd>--</dd></div>
+          <div><dt>Proteína final</dt><dd>--</dd></div>
+          <div><dt>Longitud mínima</dt><dd>--</dd></div>
+          <div><dt>Proteínas en la ruta</dt><dd>--</dd></div>
+          <div><dt>Algoritmo</dt><dd>--</dd></div>
+          <div><dt>Tiempo</dt><dd>--</dd></div>
+          <div><dt>Estado</dt><dd>Sin consulta</dd></div>
+        </dl>
+        <button class="reset-path" type="button" @click="resetPath">Nueva consulta</button>
       </aside>
     </div>
   </section>
@@ -230,8 +275,8 @@ function dismissPickerOnBlur(event: FocusEvent) {
 }
 
 .parameters-panel h2 {
-  margin: 0 0 clamp(8px, 1.4dvh, 16px);
-  font-size: clamp(1.25rem, 1.65vw, 1.75rem);
+  margin: 0 0 10px;
+  font-size: clamp(1.2rem, 1.45vw, 1.5rem);
   font-weight: 700;
   line-height: 1.15;
 }
@@ -240,7 +285,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
   display: grid;
   grid-template-columns: 1fr 1fr;
   min-height: 34px;
-  margin: 0 0 clamp(8px, 1.5dvh, 18px);
+  margin: 0 0 12px;
   gap: 3px;
   padding: 3px;
   border: 1px solid #96bdc8;
@@ -250,22 +295,25 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
 .mode-switch button {
   border: 0;
-  padding: 6px 4px;
+  padding: 5px 3px;
   background: transparent;
   color: #164c5c;
+  cursor: pointer;
   font: inherit;
-  font-size: clamp(0.8rem, 1vw, 0.98rem);
+  font-size: 0.8rem;
+  line-height: 1.2;
   font-weight: 600;
 }
 
-.mode-switch .selected { border-radius: 8px; background: linear-gradient(#28758b, #134a61); box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%); color: white; }
-.field-label { margin: 0 0 5px; font-size: clamp(0.9rem, 1.1vw, 1.05rem); font-weight: 700; line-height: 1.2; }
-.protein-input { width: 100%; min-height: 38px; margin: 0 0 clamp(8px, 1.4dvh, 16px); border: 1px solid #8aafbb; border-radius: 10px; padding: 6px 12px; background: #f5fcff; color: inherit; font: inherit; }
+.mode-switch button[aria-pressed='true'] { border-radius: 8px; background: linear-gradient(#28758b, #134a61); box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%); color: white; }
+.mode-fields { display: flex; flex-direction: column; }
+.field-label { margin: 0 0 5px; font-size: 0.875rem; font-weight: 700; line-height: 1.2; }
+.protein-input { width: 100%; min-height: 34px; margin: 0 0 10px; border: 1px solid #8aafbb; border-radius: 8px; padding: 4px 10px; background: #f5fcff; color: inherit; font: inherit; font-size: 0.875rem; }
 .protein-input::placeholder { color: #49636d; opacity: 1; }
 
 .distance-control {
   margin-bottom: 12px;
-  padding: 9px 12px 6px;
+  padding: 7px 10px 5px;
   border: 1px solid #96bdc8;
   border-radius: 12px;
   background: linear-gradient(rgb(204 237 243 / 70%), rgb(174 221 230 / 50%));
@@ -274,13 +322,13 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
 .distance-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 8px; }
 .distance-heading .field-label { margin: 0; }
-.level-badge { padding: 3px 8px; border-radius: 999px; background: #16566d; color: white; font-size: 0.85rem; font-weight: 700; }
+.level-badge { padding: 2px 7px; border-radius: 999px; background: #16566d; color: white; font-size: 0.75rem; font-weight: 700; }
 .distance-range {
   --track-background: linear-gradient(to right, #166a82 var(--range-fill), #b9d7df var(--range-fill));
   appearance: none;
   display: block;
   width: 100%;
-  height: 28px;
+  height: 24px;
   margin: 2px 0 0;
   border-radius: 6px;
   background: transparent;
@@ -291,23 +339,47 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .distance-range::-moz-range-track { height: 6px; border-radius: 999px; background: var(--track-background); }
 .distance-range::-webkit-slider-thumb { appearance: none; width: 20px; height: 20px; margin-top: -7px; border: 2px solid #166a82; border-radius: 50%; background: white; }
 .distance-range::-moz-range-thumb { box-sizing: border-box; width: 20px; height: 20px; border: 2px solid #166a82; border-radius: 50%; background: white; }
-.range-values { display: flex; justify-content: space-between; color: #34535e; font-size: 0.9rem; }
+.range-values { display: flex; justify-content: space-between; color: #34535e; font-size: 0.8rem; }
 .range-values span { width: 20px; text-align: center; }
 .range-values .current-level { color: #11485d; font-weight: 700; }
 
-.generate-button {
-  width: min(100%, 218px);
+.graph-action {
+  width: min(100%, 190px);
   margin: 0 auto;
+  min-height: 34px;
   border: 0;
-  padding: 0;
-  background: transparent;
-  cursor: pointer;
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: linear-gradient(#22c0d3, #1550bd);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%), 0 4px 10px rgb(12 76 103 / 20%);
+  color: white;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 700;
 }
 
-.generate-button img { display: block; width: 100%; height: auto; }
-.generate-button:hover { filter: brightness(1.05); }
-.generate-button:active { transform: translateY(1px); }
-.node-note { margin: 4px 0 0; color: #34535e; font-size: 0.875rem; line-height: 1.35; text-align: center; }
+.graph-action:disabled { cursor: not-allowed; opacity: 0.8; }
+.node-note {
+  margin: 6px 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgb(43 100 104 / 25%);
+  color: #34535e;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  text-align: center;
+}
+.swap-button, .reset-path {
+  align-self: center;
+  border: 1px solid #8aafbb;
+  border-radius: 8px;
+  padding: 4px 10px;
+  background: #e4f7fb;
+  color: #164c5c;
+  font: inherit;
+  cursor: pointer;
+}
+.swap-button { margin: 0 0 8px; }
+.reset-path { display: block; margin: 16px auto 0; padding: 6px 14px; }
 
 .graph-panel { display: flex; flex-direction: column; background: linear-gradient(155deg, rgb(180 231 238 / 58%), rgb(154 217 227 / 43%) 52%, rgb(171 230 233 / 54%)); }
 .graph-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 14px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }
@@ -339,6 +411,5 @@ function dismissPickerOnBlur(event: FocusEvent) {
   .visualizer-grid { grid-template-columns: 1fr; }
   .graph-panel { min-height: 240px; }
   .details-panel { grid-column: auto; }
-  .wide-break { display: none; }
 }
 </style>
