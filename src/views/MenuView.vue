@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import MenuButton from '../components/MenuButton.vue'
 
-defineProps<{ datasetName: string }>()
+defineProps<{ datasetName?: string }>()
 const emit = defineEmits<{ datasets: []; visualizer: [] }>()
 </script>
 
@@ -22,7 +22,7 @@ const emit = defineEmits<{ datasets: []; visualizer: [] }>()
   </section>
 
   <div class="dataset-status" role="status">
-    Dataset cargado: {{ datasetName }}
+    {{ datasetName ? `Dataset cargado: ${datasetName}` : 'Sin datasets cargados' }}
   </div>
 </template>
 

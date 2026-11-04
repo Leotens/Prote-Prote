@@ -1,18 +1,72 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import BackToMenu from '../components/BackToMenu.vue'
-import { formatCount, type Dataset } from '../datasets'
+import { formatCount, formatFileSize, type Dataset } from '../datasets'
 
-defineProps<{ datasets: readonly Dataset[] }>()
-const selected = defineModel<Dataset>({ required: true })
+const props = defineProps<{
+  datasets: readonly Dataset[]
+  saving: boolean
+  importDataset: (file: File, hasHeader: boolean) => Promise<Dataset>
+  removeDataset: (dataset: Dataset) => Promise<void>
+}>()
+const selected = defineModel<Dataset | null>({ required: true })
 const emit = defineEmits<{ back: [] }>()
 
 const statistics = computed(() => [
-  { label: 'Nodos', value: selected.value.nodes },
-  { label: 'Aristas', value: selected.value.edges },
-  { label: 'Grado promedio', value: selected.value.averageDegree },
-  { label: 'Componente conectado principal', value: selected.value.largestComponent },
+  { label: 'Tamaño del archivo', value: selected.value?.sizeBytes, format: formatFileSize },
+  { label: 'Filas de datos', value: selected.value?.rows, format: formatCount },
+  { label: 'Proteínas únicas', value: selected.value?.nodes, format: formatCount },
+  { label: 'Interacciones únicas', value: selected.value?.edges, format: formatCount },
 ])
+
+const fileInput = ref<HTMLInputElement | null>(null)
+const headerDialog = ref<HTMLDialogElement | null>(null)
+const pendingFile = ref<File | null>(null)
+const uploadStatus = ref('')
+
+function selectFile(event: Event) {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  input.value = ''
+  pendingFile.value = file
+  headerDialog.value?.showModal()
+}
+
+function closeHeaderDialog() {
+  pendingFile.value = null
+  headerDialog.value?.close()
+}
+
+async function confirmUpload(hasHeader: boolean) {
+  const file = pendingFile.value
+  if (!file || props.saving) return
+
+  closeHeaderDialog()
+  uploadStatus.value = `Enviando ${file.name}…`
+
+  try {
+    const dataset = await props.importDataset(file, hasHeader)
+    uploadStatus.value = `Dataset guardado: ${dataset.name}`
+  } catch (error) {
+    uploadStatus.value = error instanceof Error
+      ? error.message
+      : 'No se pudo enviar el archivo.'
+  }
+}
+
+async function removeSelectedDataset() {
+  const dataset = selected.value
+  if (!dataset || props.saving || !window.confirm(`¿Eliminar «${dataset.name}» de la lista?`)) return
+
+  try {
+    await props.removeDataset(dataset)
+    uploadStatus.value = `Dataset eliminado: ${dataset.name}`
+  } catch {
+    uploadStatus.value = 'No se pudo eliminar el dataset de este navegador.'
+  }
+}
 </script>
 
 <template>
@@ -21,16 +75,17 @@ const statistics = computed(() => [
       <BackToMenu @back="emit('back')" />
       <h1 id="datasets-title">Datasets disponibles</h1>
 
-      <ul>
+      <p v-if="!datasets.length">Carga un CSV para empezar.</p>
+      <ul v-else>
         <li v-for="dataset in datasets" :key="dataset.name">
           <button
             class="dataset-option"
             type="button"
-            :aria-pressed="dataset.name === selected.name"
+            :aria-pressed="dataset.name === selected?.name"
             @click="selected = dataset"
           >
             <span>{{ dataset.name }}</span>
-            <span v-if="dataset.name === selected.name" class="selected-label" aria-hidden="true">Seleccionado</span>
+            <span v-if="dataset.name === selected?.name" class="selected-label" aria-hidden="true">Seleccionado</span>
           </button>
         </li>
       </ul>
@@ -38,20 +93,48 @@ const statistics = computed(() => [
 
     <aside class="glass-panel dataset-card" aria-labelledby="dataset-name">
       <p class="details-label">Detalles del dataset</p>
-      <h2 id="dataset-name">{{ selected.name }}</h2>
-      <dl>
-        <div v-for="{ label, value } in statistics" :key="label">
+      <h2 id="dataset-name">{{ selected?.name ?? 'Sin dataset seleccionado' }}</h2>
+      <dl v-if="selected">
+        <div v-for="{ label, value, format } in statistics" :key="label">
           <dt>{{ label }}</dt>
-          <dd>{{ value === undefined ? 'Sin datos' : formatCount(value) }}</dd>
+          <dd>{{ value === undefined ? 'Sin datos' : format(value) }}</dd>
         </div>
       </dl>
 
       <div class="dataset-actions">
-        <button type="button" disabled>Cargar nuevo dataset</button>
-        <button class="delete" type="button" disabled>Eliminar dataset</button>
-        <p>Datos de ejemplo</p>
+        <input
+          ref="fileInput"
+          type="file"
+          accept=".csv,.csv.gz"
+          hidden
+          @change="selectFile"
+        />
+        <p v-if="uploadStatus" role="status">{{ uploadStatus }}</p>
+        <button type="button" :disabled="saving" @click="fileInput?.click()">
+          Cargar nuevo dataset
+        </button>
+        <button class="delete" type="button" :disabled="!selected || saving" @click="removeSelectedDataset">
+          Eliminar dataset
+        </button>
       </div>
     </aside>
+
+    <dialog
+      ref="headerDialog"
+      class="header-dialog"
+      aria-labelledby="header-dialog-title"
+      aria-describedby="header-dialog-description"
+      @cancel="pendingFile = null"
+    >
+      <h2 id="header-dialog-title">¿Tu archivo tiene encabezado?</h2>
+      <p v-if="pendingFile" class="dialog-filename">{{ pendingFile.name }}</p>
+      <p id="header-dialog-description">Elige «Sí» si la primera fila contiene los nombres de las columnas.</p>
+      <div class="dataset-actions dialog-actions">
+        <button type="button" @click="confirmUpload(true)">Sí, tiene encabezado</button>
+        <button type="button" @click="confirmUpload(false)">No, empieza con datos</button>
+        <button class="dialog-cancel" type="button" @click="closeHeaderDialog">Cancelar</button>
+      </div>
+    </dialog>
   </section>
 </template>
 
@@ -104,11 +187,12 @@ const statistics = computed(() => [
 .selected-label { font-size: 0.875rem; }
 
 .details-label { margin: 0 0 4px; color: #34535e; font-size: 0.9rem; }
+.dataset-card { display: flex; flex-direction: column; }
 .dataset-card dl { margin: 12px 0 18px; }
 .dataset-card dl div { display: flex; justify-content: space-between; gap: 8px; padding: 8px 2px; border-bottom: 1px solid rgb(43 100 104 / 25%); }
 .dataset-card dd { margin: 0; flex: 0 0 auto; font-weight: 700; }
 
-.dataset-actions { display: grid; gap: 8px; }
+.dataset-actions { display: grid; gap: 8px; margin-top: auto; }
 .dataset-actions button {
   border: 1px solid rgb(255 255 255 / 35%);
   border-radius: 999px;
@@ -117,11 +201,35 @@ const statistics = computed(() => [
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%);
   color: white;
   font-size: 1rem;
+  transition: filter 150ms ease, transform 150ms ease, box-shadow 150ms ease;
 }
 
 .dataset-actions .delete { background: linear-gradient(#a74b5a, #782535); }
+.dataset-actions button:enabled { cursor: pointer; }
+.dataset-actions button:enabled:hover { filter: brightness(1.12); }
+.dataset-actions button:enabled:active {
+  transform: translateY(1px);
+  filter: brightness(0.9);
+  box-shadow: inset 0 2px 5px rgb(7 39 51 / 40%);
+}
+.dataset-actions button:focus-visible { outline: 2px solid #08485d; outline-offset: 3px; }
 .dataset-actions button:disabled { cursor: not-allowed; opacity: 0.82; }
-.dataset-actions p { margin: 2px 0 0; color: #34535e; font-size: 0.875rem; text-align: center; }
+.dataset-actions p { margin: 2px 0 0; color: #34535e; font-size: 0.875rem; overflow-wrap: anywhere; text-align: center; }
+
+.header-dialog {
+  width: min(420px, calc(100% - 32px));
+  padding: 24px;
+  border: 1px solid #c5ebf2;
+  border-radius: 20px;
+  background: linear-gradient(#d4eef3, #a9dce5);
+  box-shadow: 0 12px 36px rgb(8 53 73 / 32%);
+  color: #12333f;
+}
+
+.header-dialog::backdrop { background: rgb(8 43 63 / 50%); }
+.header-dialog h2 { margin: 0; font-size: 1.3rem; }
+.dialog-filename { font-weight: 700; overflow-wrap: anywhere; }
+.dialog-actions .dialog-cancel { background: transparent; color: inherit; border-color: #7aafbd; }
 
 @media (max-width: 640px) {
   .datasets { grid-template-columns: 1fr; margin-left: 0; }

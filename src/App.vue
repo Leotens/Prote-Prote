@@ -1,47 +1,71 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { watchEffect } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import AppHeader from './components/AppHeader.vue'
-import { exampleDatasets, type Dataset } from './datasets'
-import DatasetsView from './views/DatasetsView.vue'
-import MenuView from './views/MenuView.vue'
-import VisualizerView from './views/VisualizerView.vue'
+import { useDatasets } from './composables/useDatasets'
 
-type View = 'menu' | 'datasets' | 'visualizer'
+const route = useRoute()
+const router = useRouter()
 
-const viewTitles: Record<View, string> = {
-  menu: 'Bienvenido de vuelta',
-  datasets: 'Administrar datasets',
-  visualizer: 'Visualizar Dataset',
+const {
+  datasets,
+  selectedDataset,
+  loadingDatasets,
+  storageError,
+  savingDataset,
+  importDataset,
+  removeDataset,
+} = useDatasets()
+
+function goHome() {
+  return router.push({ name: 'menu' })
 }
 
-const currentView = ref<View>('menu')
-const selectedDataset = ref<Dataset>(exampleDatasets[0])
-const title = computed(() => viewTitles[currentView.value])
+watchEffect(() => {
+  if (
+    route.name === 'visualizer' &&
+    !loadingDatasets.value &&
+    !storageError.value &&
+    !selectedDataset.value
+  ) {
+    void router.replace({ name: 'datasets' })
+  }
+})
 </script>
 
 <template>
   <main class="menu-page">
-    <AppHeader :title="title" @home="currentView = 'menu'" />
+    <AppHeader :title="route.meta.title ?? 'Bienvenido de vuelta'" @home="goHome" />
 
-    <div :key="currentView" class="screen">
-      <MenuView
-        v-if="currentView === 'menu'"
-        :dataset-name="selectedDataset.name"
-        @datasets="currentView = 'datasets'"
-        @visualizer="currentView = 'visualizer'"
-      />
-      <DatasetsView
-        v-else-if="currentView === 'datasets'"
-        v-model="selectedDataset"
-        :datasets="exampleDatasets"
-        @back="currentView = 'menu'"
-      />
-      <VisualizerView
-        v-else
-        v-model="selectedDataset"
-        :datasets="exampleDatasets"
-        @back="currentView = 'menu'"
-      />
+    <div :key="route.name" class="screen">
+      <p v-if="loadingDatasets" role="status">Recuperando datasets…</p>
+      <p v-else-if="storageError" role="alert">{{ storageError }}</p>
+      <RouterView v-else v-slot="{ Component, route: viewRoute }">
+        <component
+          :is="Component"
+          v-if="viewRoute.name === 'menu'"
+          :dataset-name="selectedDataset?.name"
+          @datasets="router.push({ name: 'datasets' })"
+          @visualizer="router.push({ name: selectedDataset ? 'visualizer' : 'datasets' })"
+        />
+        <component
+          :is="Component"
+          v-else-if="viewRoute.name === 'datasets'"
+          v-model="selectedDataset"
+          :datasets="datasets"
+          :saving="savingDataset"
+          :import-dataset="importDataset"
+          :remove-dataset="removeDataset"
+          @back="goHome"
+        />
+        <component
+          :is="Component"
+          v-else-if="viewRoute.name === 'visualizer' && selectedDataset"
+          v-model="selectedDataset"
+          :datasets="datasets"
+          @back="goHome"
+        />
+      </RouterView>
     </div>
   </main>
 </template>

@@ -1,46 +1,40 @@
-<<<<<<< HEAD
 # Prote-Prote
-=======
-# prote-prote
 
-This template should help get you started developing with Vue 3 in Vite.
+Aplicación web para explorar interacciones entre proteínas. El frontend usa Vue y TypeScript. El backend usa Python y FastAPI para validar los archivos CSV y calcular sus estadísticas.
 
-## Recommended IDE Setup
+## Requisitos
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+- Node.js 22.18.0 o posterior dentro de la rama 22, o Node.js 24.12.0 o posterior.
+- Python 3.11 o posterior.
 
-## Recommended Browser Setup
+Ejecuta los comandos desde la raíz del repositorio en PowerShell. Usa una terminal para cada servidor.
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+## 1. Iniciar el backend
 
-## Type Support for `.vue` Imports in TS
+La primera vez, crea un entorno virtual e instala las dependencias:
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
-
-## Customize configuration
-
-See [Vite Configuration Reference](https://vite.dev/config/).
-
-## Project Setup
-
-```sh
-npm install
+```powershell
+python -m venv backend/.venv
+.\backend\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
 ```
 
-### Compile and Hot-Reload for Development
+En cada sesión, inicia FastAPI:
 
-```sh
-npm run dev
+```powershell
+.\backend\.venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --reload --host 127.0.0.1 --port 8765
 ```
 
-### Type-Check, Compile and Minify for Production
+Abre [la documentación interactiva de la API](http://127.0.0.1:8765/docs) para comprobar que está en marcha. Ahí también puedes probar `POST /api/datasets` directamente.
 
-```sh
-npm run build
+En macOS y Linux, usa `python3` para crear el entorno y `./backend/.venv/bin/python` para ejecutar los comandos de pip y Uvicorn.
+
+## 2. Iniciar el frontend
+
+En otra terminal, instala las dependencias con `npm ci` la primera vez y cuando cambie `package-lock.json`. Luego inicia Vite:
+
+```powershell
+npm.cmd ci
+npm.cmd run dev
 ```
->>>>>>> master
+
+Abre la URL que imprime Vite, normalmente [http://localhost:5173](http://localhost:5173). Vite redirige las solicitudes de `/api` al backend en el puerto `8765`. En macOS y Linux, usa `npm` en lugar de `npm.cmd`.
