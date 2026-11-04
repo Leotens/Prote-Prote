@@ -2,7 +2,7 @@
 import MenuButton from '../components/MenuButton.vue'
 
 defineProps<{ datasetName?: string }>()
-const emit = defineEmits<{ datasets: []; visualizer: [] }>()
+const emit = defineEmits<{ datasets: []; visualizer: []; compare: [] }>()
 </script>
 
 <template>
@@ -10,7 +10,7 @@ const emit = defineEmits<{ datasets: []; visualizer: [] }>()
     <nav class="menu-actions" aria-label="Opciones principales">
       <MenuButton class="button-load" surface="/images/boton_1.png" @click="emit('datasets')">Administrar <br> Datasets</MenuButton>
       <MenuButton class="button-visualize" surface="/images/boton_1.png" @click="emit('visualizer')">Visualizar<br />Dataset</MenuButton>
-      <MenuButton class="button-compare" surface="/images/boton_2.png">Comparar<br />proteínas</MenuButton>
+      <MenuButton class="button-compare" surface="/images/boton_2.png" @click="emit('compare')">Comparar<br />proteínas</MenuButton>
       <MenuButton class="button-credits" surface="/images/boton_1.png">Créditos</MenuButton>
     </nav>
 

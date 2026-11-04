@@ -23,7 +23,7 @@ function goHome() {
 
 watchEffect(() => {
   if (
-    route.name === 'visualizer' &&
+    (route.name === 'visualizer' || route.name === 'compare') &&
     !loadingDatasets.value &&
     !storageError.value &&
     !selectedDataset.value
@@ -47,6 +47,7 @@ watchEffect(() => {
           :dataset-name="selectedDataset?.name"
           @datasets="router.push({ name: 'datasets' })"
           @visualizer="router.push({ name: selectedDataset ? 'visualizer' : 'datasets' })"
+          @compare="router.push({ name: selectedDataset ? 'compare' : 'datasets' })"
         />
         <component
           :is="Component"
@@ -61,6 +62,13 @@ watchEffect(() => {
         <component
           :is="Component"
           v-else-if="viewRoute.name === 'visualizer' && selectedDataset"
+          v-model="selectedDataset"
+          :datasets="datasets"
+          @back="goHome"
+        />
+        <component
+          :is="Component"
+          v-else-if="viewRoute.name === 'compare' && selectedDataset"
           v-model="selectedDataset"
           :datasets="datasets"
           @back="goHome"
