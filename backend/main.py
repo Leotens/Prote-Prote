@@ -1,6 +1,7 @@
 import csv
 from io import BytesIO
 from math import sqrt
+from collections import deque
 from typing import Annotated
 
 import networkx as nx
@@ -196,3 +197,72 @@ def generate_graph(
     document, closing_tag, tail = html.rpartition("</body>")
     html = document + ready_script + closing_tag + tail
     return HTMLResponse(html)
+
+
+@app.post("/api/datasets/subgraph")
+def generate_subgraph(
+    file: UploadFile,
+    has_header: Annotated[bool, Form()],
+    protein_id: Annotated[str, Form()],
+    distance: Annotated[int, Form(ge=1, le=3)],
+    node_limit: Annotated[int, Form(ge=1, le=1500)],
+    interactive: Annotated[bool, Form()] = True,
+):
+    proteins, edges, _ = read_dataset(file, has_header)
+    protein_id = protein_id.strip()
+    if not protein_id:
+        raise HTTPException(status_code=422, detail="Ingresa un identificador de proteína.")
+    if protein_id not in proteins:
+        raise HTTPException(status_code=404, detail=f"No se encontró la proteína {protein_id} en el dataset.")
+
+    component = largest_component(proteins)
+    graph_nodes = component[:node_limit]
+    graph_node_set = set(graph_nodes)
+    if protein_id not in graph_node_set:
+        raise HTTPException(
+            status_code=422,
+            detail=f"La proteína {protein_id} no está entre los {node_limit} nodos del grafo generado. Aumenta el límite de nodos y vuelve a generarlo.",
+        )
+
+    distances = {protein_id: 0}
+    queue = deque([protein_id])
+    while queue:
+        node = queue.popleft()
+        if distances[node] == distance:
+            continue
+        for neighbor in proteins[node]:
+            if neighbor in graph_node_set and neighbor not in distances:
+                distances[neighbor] = distances[node] + 1
+                queue.append(neighbor)
+
+    nodes = list(distances)
+    selected = set(nodes)
+    visible_edges = [(source, target) for source, target in edges if source in selected and target in selected]
+    if not interactive:
+        return render_graph_image(nodes, visible_edges)
+
+    net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
+    net.set_options('{"physics":{"stabilization":{"iterations":100,"updateInterval":25}}}')
+    for node in nodes:
+        is_origin = node == protein_id
+        net.add_node(node, label=node, color="#1550bd" if is_origin else "#ff8539", title=f"Proteína central: {node}" if is_origin else node, size=32 if is_origin else 22)
+    for source, target in visible_edges:
+        net.add_edge(source, target)
+
+    styles = """
+    <style>
+      html, body { margin: 0; overflow: hidden; background: transparent; }
+      body > .card, #mynetwork { background: transparent; border: 0; padding: 0; }
+      #loadingBar { display: none !important; }
+    </style>
+    """
+    html = net.generate_html().replace("</head>", styles + "</head>", 1)
+    ready_script = """
+    <script>
+      function notifyGraphReady() { window.parent.postMessage('prote-prote:graph-ready', '*'); }
+      if (nodes.length <= 1) { notifyGraphReady(); }
+      else { network.once('stabilizationIterationsDone', notifyGraphReady); }
+    </script>
+    """
+    document, closing_tag, tail = html.rpartition("</body>")
+    return HTMLResponse(document + ready_script + closing_tag + tail)

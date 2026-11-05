@@ -10,14 +10,29 @@ const emit = defineEmits<{ back: [] }>()
 const mode = ref<'neighborhood' | 'shortest-path'>('neighborhood')
 const origin = ref('')
 const destination = ref('')
+const proteinId = ref('')
 const distanceLevel = ref(2)
 const pickerOpen = ref(false)
 const pickerTrigger = ref<HTMLButtonElement | null>(null)
 
-const { graphHtml, graphImageUrl, graphError, generatingGraph, generateGraph, clearGraph } = useDatasetGraph()
+const {
+  graphHtml,
+  graphImageUrl,
+  graphError,
+  generatingGraph,
+  hasFullGraph,
+  hasSubgraph,
+  activeGraph,
+  generateGraph,
+  generateSubgraph,
+  showGraph,
+  clearGraph,
+} = useDatasetGraph()
 const nodeLimit = ref<number | null>(100)
 const interactiveLimit = 100
 const interactive = ref(true)
+const generatedNodeLimit = ref<number | null>(null)
+const generatedInteractive = ref(true)
 const loadWarning = ref<HTMLDialogElement | null>(null)
 const graphFrame = ref<HTMLIFrameElement | null>(null)
 const viewerReady = ref(false)
@@ -59,7 +74,15 @@ function requestGraph(confirmInteractive = false) {
   }
 
   loadWarning.value?.close()
+  generatedNodeLimit.value = limit
+  generatedInteractive.value = interactive.value
   void generateGraph(dataset.value, limit, interactive.value)
+}
+
+function requestSubgraph() {
+  const id = proteinId.value.trim()
+  if (loadingGraph.value || !hasFullGraph.value || !id || generatedNodeLimit.value === null || !Number.isInteger(distanceLevel.value) || distanceLevel.value < 1 || distanceLevel.value > 3) return
+  void generateSubgraph(dataset.value, id, distanceLevel.value, generatedNodeLimit.value, generatedInteractive.value)
 }
 
 function swapProteins() {
@@ -120,7 +143,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
         <div v-show="mode === 'neighborhood'" class="mode-fields">
           <label class="field-label" for="protein-id">Identificador de proteína</label>
-          <input id="protein-id" class="protein-input" type="text" placeholder="Ejemplo: 7157" />
+          <input id="protein-id" v-model="proteinId" class="protein-input" type="text" placeholder="Ejemplo: 7157" @keydown.enter="requestSubgraph" />
 
           <div class="distance-control">
             <div class="distance-heading">
@@ -142,7 +165,9 @@ function dismissPickerOnBlur(event: FocusEvent) {
             </div>
           </div>
 
-          <button class="graph-action" type="button" disabled>Generar subgrafo</button>
+          <button class="graph-action" type="button" :disabled="loadingGraph || !hasFullGraph || !proteinId.trim()" @click="requestSubgraph">
+            {{ generatingGraph ? 'Generando…' : 'Generar subgrafo' }}
+          </button>
         </div>
 
         <div v-show="mode === 'shortest-path'" class="mode-fields">
@@ -208,6 +233,11 @@ function dismissPickerOnBlur(event: FocusEvent) {
           </div>
         </header>
 
+        <div v-if="hasSubgraph" class="graph-view-switch" aria-label="Vista del grafo">
+          <button type="button" :aria-pressed="activeGraph === 'full'" @click="showGraph('full')">Grafo generado</button>
+          <button type="button" :aria-pressed="activeGraph === 'subgraph'" @click="showGraph('subgraph')">Subgrafo</button>
+        </div>
+
         <p v-if="graphError" role="alert">{{ graphError }}</p>
         <div v-if="loadingGraph || graphHtml" class="graph-stage">
           <iframe
@@ -240,7 +270,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
             o desmárcalo para ver una imagen.
           </p>
           <p v-if="mode === 'neighborhood'">
-            Para explorar una proteína, ingresa su ID y elige la distancia máxima del subgrafo.
+            Genera el grafo primero. Luego, ingresa el ID de una proteína incluida y elige la distancia máxima del subgrafo.
           </p>
           <p v-else>Para consultar una ruta, ingresa las proteínas de origen y destino.</p>
         </div>
@@ -501,6 +531,9 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .load-warning-actions button { width: auto; margin: 0; }
 
 .graph-panel { display: flex; flex-direction: column; background: linear-gradient(155deg, rgb(180 231 238 / 58%), rgb(154 217 227 / 43%) 52%, rgb(171 230 233 / 54%)); }
+.graph-view-switch { display: flex; align-self: center; gap: 4px; margin: 0 12px 8px; padding: 3px; border: 1px solid #96bdc8; border-radius: 11px; background: #c6e7ee; }
+.graph-view-switch button { border: 0; border-radius: 8px; padding: 5px 12px; background: transparent; color: #164c5c; cursor: pointer; font: inherit; font-size: 0.85rem; }
+.graph-view-switch button[aria-pressed='true'] { background: linear-gradient(#28758b, #134a61); color: white; }
 .graph-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 14px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }
 .graph-toolbar button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 8px; padding: 0; background: transparent; color: #154858; cursor: pointer; }
 .graph-toolbar button:enabled:hover { background: #cde9f0; }
