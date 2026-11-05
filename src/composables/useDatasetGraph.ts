@@ -15,6 +15,7 @@ export function useDatasetGraph() {
   const hasSubgraph = computed(() => !!subgraphHtml.value || !!subgraphImageUrl.value)
   const graphError = ref('')
   const generatingGraph = ref(false)
+  const downloadingGraph = ref(false)
   let pendingGraph: AbortController | undefined
 
   function clearGraph() {
@@ -115,16 +116,55 @@ export function useDatasetGraph() {
     }
   }
 
+  async function downloadGraph(dataset: Dataset, nodeLimit: number, proteinId: string, distance: number) {
+    if (downloadingGraph.value || !hasFullGraph.value) return
+
+    const graphToDownload = activeGraph.value
+    downloadingGraph.value = true
+    graphError.value = ''
+    const controller = new AbortController()
+
+    try {
+      const record = await getStoredDataset(dataset.name)
+      if (!record) throw new Error('No se pudo recuperar el dataset guardado en este navegador.')
+
+      const result = graphToDownload === 'subgraph'
+        ? await requestDatasetSubgraph(record.file, record.hasHeader, proteinId, distance, nodeLimit, false, controller.signal)
+        : await requestDatasetGraph(record.file, record.hasHeader, nodeLimit, false, controller.signal)
+
+      if (!('image' in result)) throw new Error('No se pudo preparar la imagen PNG.')
+
+      const url = URL.createObjectURL(result.image)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = graphToDownload === 'subgraph' ? `subgrafo-${proteinId}.png` : `grafo-${dataset.name}.png`
+      document.body.append(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+    } catch (error) {
+      graphError.value = error instanceof Error ? error.message : 'Error al descargar el grafo.'
+    } finally {
+      downloadingGraph.value = false
+    }
+  }
+
   return {
     graphHtml,
     graphImageUrl,
+    fullGraphHtml,
+    fullGraphImageUrl,
+    subgraphHtml,
+    subgraphImageUrl,
     graphError,
     generatingGraph,
+    downloadingGraph,
     hasFullGraph,
     hasSubgraph,
     activeGraph,
     generateGraph,
     generateSubgraph,
+    downloadGraph,
     showGraph,
     clearGraph,
   }

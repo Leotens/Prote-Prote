@@ -17,14 +17,19 @@ const pickerTrigger = ref<HTMLButtonElement | null>(null)
 
 const {
   graphHtml,
-  graphImageUrl,
+  fullGraphHtml,
+  fullGraphImageUrl,
+  subgraphHtml,
+  subgraphImageUrl,
   graphError,
   generatingGraph,
+  downloadingGraph,
   hasFullGraph,
   hasSubgraph,
   activeGraph,
   generateGraph,
   generateSubgraph,
+  downloadGraph,
   showGraph,
   clearGraph,
 } = useDatasetGraph()
@@ -33,27 +38,48 @@ const interactiveLimit = 100
 const interactive = ref(true)
 const generatedNodeLimit = ref<number | null>(null)
 const generatedInteractive = ref(true)
+const generatedSubgraphProtein = ref('')
+const generatedSubgraphDistance = ref(2)
 const loadWarning = ref<HTMLDialogElement | null>(null)
 const graphFrame = ref<HTMLIFrameElement | null>(null)
-const viewerReady = ref(false)
+const subgraphFrame = ref<HTMLIFrameElement | null>(null)
+const fullViewerReady = ref(false)
+const subgraphViewerReady = ref(false)
+const viewerReady = computed(() => activeGraph.value === 'full' ? fullViewerReady.value : subgraphViewerReady.value)
 const loadingGraph = computed(() => generatingGraph.value || (!!graphHtml.value && !viewerReady.value))
 
-watch(graphHtml, (html, _, onCleanup) => {
-  viewerReady.value = false
+watch(fullGraphHtml, (html, _, onCleanup) => {
+  fullViewerReady.value = false
   if (!html) return
 
   const timeout = window.setTimeout(() => {
-    if (viewerReady.value) return
+    if (fullViewerReady.value) return
 
-    clearGraph()
+    fullViewerReady.value = true
     graphError.value = 'El visor interactivo tardó demasiado. Prueba con menos nodos o usa el modo imagen.'
   }, 5 * 60 * 1_000)
   onCleanup(() => window.clearTimeout(timeout))
 })
 
+watch(subgraphHtml, (html, _, onCleanup) => {
+  subgraphViewerReady.value = false
+  if (!html) return
+
+  const timeout = window.setTimeout(() => {
+    if (subgraphViewerReady.value) return
+
+    subgraphViewerReady.value = true
+    graphError.value = 'El visor interactivo tardó demasiado. Prueba con una distancia menor o usa el modo imagen.'
+  }, 5 * 60 * 1_000)
+  onCleanup(() => window.clearTimeout(timeout))
+})
+
 function onViewerMessage(event: MessageEvent) {
-  if (event.source === graphFrame.value?.contentWindow && event.data === 'prote-prote:graph-ready') {
-    viewerReady.value = true
+  if (event.data !== 'prote-prote:graph-ready') return
+  if (event.source === graphFrame.value?.contentWindow) {
+    fullViewerReady.value = true
+  } else if (event.source === subgraphFrame.value?.contentWindow) {
+    subgraphViewerReady.value = true
   }
 }
 
@@ -82,7 +108,14 @@ function requestGraph(confirmInteractive = false) {
 function requestSubgraph() {
   const id = proteinId.value.trim()
   if (loadingGraph.value || !hasFullGraph.value || !id || generatedNodeLimit.value === null || !Number.isInteger(distanceLevel.value) || distanceLevel.value < 1 || distanceLevel.value > 3) return
+  generatedSubgraphProtein.value = id
+  generatedSubgraphDistance.value = distanceLevel.value
   void generateSubgraph(dataset.value, id, distanceLevel.value, generatedNodeLimit.value, generatedInteractive.value)
+}
+
+function requestGraphDownload() {
+  if (generatedNodeLimit.value === null) return
+  void downloadGraph(dataset.value, generatedNodeLimit.value, generatedSubgraphProtein.value, generatedSubgraphDistance.value)
 }
 
 function swapProteins() {
@@ -227,7 +260,13 @@ function dismissPickerOnBlur(event: FocusEvent) {
             <button type="button" aria-label="Pantalla completa">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg>
             </button>
-            <button type="button" aria-label="Descargar subgrafo" title="Disponible al generar un subgrafo" disabled>
+            <button
+              type="button"
+              aria-label="Descargar grafo como PNG"
+              :title="downloadingGraph ? 'Preparando imagen PNG…' : 'Descargar la vista actual como PNG'"
+              :disabled="!hasFullGraph || generatingGraph || downloadingGraph"
+              @click="requestGraphDownload"
+            >
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
             </button>
           </div>
@@ -239,28 +278,45 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </div>
 
         <p v-if="graphError" role="alert">{{ graphError }}</p>
-        <div v-if="loadingGraph || graphHtml" class="graph-stage">
+        <div v-if="hasFullGraph || hasSubgraph || loadingGraph" class="graph-stage">
           <iframe
-            v-if="graphHtml"
+            v-if="fullGraphHtml"
             ref="graphFrame"
             class="graph-frame"
-            :class="{ 'graph-frame-pending': !viewerReady }"
-            title="Grafo de interacciones entre proteínas"
-            :srcdoc="graphHtml"
+            :class="{ 'graph-frame-pending': !fullViewerReady, 'graph-frame-inactive': activeGraph !== 'full' }"
+            title="Grafo generado de interacciones entre proteínas"
+            :srcdoc="fullGraphHtml"
             sandbox="allow-scripts"
           ></iframe>
+          <iframe
+            v-if="subgraphHtml"
+            ref="subgraphFrame"
+            class="graph-frame"
+            :class="{ 'graph-frame-pending': !subgraphViewerReady, 'graph-frame-inactive': activeGraph !== 'subgraph' }"
+            title="Subgrafo de interacciones entre proteínas"
+            :srcdoc="subgraphHtml"
+            sandbox="allow-scripts"
+          ></iframe>
+          <img
+            v-if="fullGraphImageUrl"
+            class="graph-image"
+            :class="{ 'graph-image-inactive': activeGraph !== 'full' }"
+            :src="fullGraphImageUrl"
+            alt="Imagen del grafo de interacciones entre proteínas"
+          />
+          <img
+            v-if="subgraphImageUrl"
+            class="graph-image"
+            :class="{ 'graph-image-inactive': activeGraph !== 'subgraph' }"
+            :src="subgraphImageUrl"
+            alt="Imagen del subgrafo de interacciones entre proteínas"
+          />
           <div v-if="loadingGraph" class="empty-graph" role="status">
             <img class="mascot mascot-loading" src="/images/mascot.png" alt="" />
             <h2>Generando el grafo…</h2>
             <p>Estamos preparando las conexiones del dataset.</p>
           </div>
         </div>
-        <img
-          v-else-if="graphImageUrl"
-          class="graph-image"
-          :src="graphImageUrl"
-          alt="Imagen de la red de interacciones entre proteínas"
-        />
         <div v-else class="empty-graph">
           <img class="mascot" src="/images/mascot.png" alt="Mascota de Prote-Prote" />
           <h2>Visualiza la red de proteínas</h2>
@@ -338,6 +394,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 }
 
 .graph-frame-pending { visibility: hidden; }
+.graph-frame-inactive, .graph-image-inactive { visibility: hidden; pointer-events: none; }
 .graph-image { display: block; width: 100%; min-height: 0; max-height: 65dvh; flex: 1; object-fit: contain; }
 
 .graph-header {
