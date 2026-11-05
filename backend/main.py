@@ -171,9 +171,28 @@ def generate_graph(
         border: 0;
         padding: 0;
       }
+
+      #loadingBar {
+        display: none !important;
+      }
     </style>
     """
 
     html = net.generate_html()
     html = html.replace("</head>", styles + "</head>", 1)
+    ready_script = """
+    <script>
+      function notifyGraphReady() {
+        window.parent.postMessage('prote-prote:graph-ready', '*');
+      }
+
+      if (nodes.length <= 1) {
+        notifyGraphReady();
+      } else {
+        network.once('stabilizationIterationsDone', notifyGraphReady);
+      }
+    </script>
+    """
+    document, closing_tag, tail = html.rpartition("</body>")
+    html = document + ready_script + closing_tag + tail
     return HTMLResponse(html)

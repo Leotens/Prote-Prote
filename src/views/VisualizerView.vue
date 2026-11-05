@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import BackToMenu from '../components/BackToMenu.vue'
 import { formatCount, type Dataset } from '../datasets'
 import { useDatasetGraph } from '../composables/useDatasetGraph'
@@ -19,6 +19,31 @@ const nodeLimit = ref<number | null>(100)
 const interactiveLimit = 100
 const interactive = ref(true)
 const loadWarning = ref<HTMLDialogElement | null>(null)
+const graphFrame = ref<HTMLIFrameElement | null>(null)
+const viewerReady = ref(false)
+const loadingGraph = computed(() => generatingGraph.value || (!!graphHtml.value && !viewerReady.value))
+
+watch(graphHtml, (html, _, onCleanup) => {
+  viewerReady.value = false
+  if (!html) return
+
+  const timeout = window.setTimeout(() => {
+    if (viewerReady.value) return
+
+    clearGraph()
+    graphError.value = 'El visor interactivo tardó demasiado. Prueba con menos nodos o usa el modo imagen.'
+  }, 5 * 60 * 1_000)
+  onCleanup(() => window.clearTimeout(timeout))
+})
+
+function onViewerMessage(event: MessageEvent) {
+  if (event.source === graphFrame.value?.contentWindow && event.data === 'prote-prote:graph-ready') {
+    viewerReady.value = true
+  }
+}
+
+onMounted(() => window.addEventListener('message', onViewerMessage))
+onBeforeUnmount(() => window.removeEventListener('message', onViewerMessage))
 
 watch(nodeLimit, (limit) => {
   if (typeof limit === 'number') interactive.value = limit <= interactiveLimit
@@ -26,7 +51,7 @@ watch(nodeLimit, (limit) => {
 
 function requestGraph(confirmInteractive = false) {
   const limit = nodeLimit.value
-  if (generatingGraph.value || typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 1500) return
+  if (loadingGraph.value || typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 1500) return
 
   if (interactive.value && limit > interactiveLimit && !confirmInteractive) {
     loadWarning.value?.showModal()
@@ -82,10 +107,10 @@ function dismissPickerOnBlur(event: FocusEvent) {
         <button
           class="graph-action dataset-graph-action"
           type="button"
-          :disabled="generatingGraph || typeof nodeLimit !== 'number' || !Number.isInteger(nodeLimit) || nodeLimit < 1 || nodeLimit > 1500"
+          :disabled="loadingGraph || typeof nodeLimit !== 'number' || !Number.isInteger(nodeLimit) || nodeLimit < 1 || nodeLimit > 1500"
           @click="requestGraph()"
         >
-          {{ generatingGraph ? 'Generando…' : 'Generar grafo' }}
+          {{ loadingGraph ? 'Generando…' : 'Generar grafo' }}
         </button>
 
         <div class="mode-switch" aria-label="Modo de exploración">
@@ -141,7 +166,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
                 class="dataset-trigger"
                 type="button"
                 :aria-expanded="pickerOpen"
-                :disabled="generatingGraph"
+                :disabled="loadingGraph"
                 aria-controls="visualizer-dataset-picker"
                 @click="pickerOpen = !pickerOpen"
               >
@@ -155,7 +180,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
                     :key="option.name"
                     type="button"
                     :aria-pressed="option.name === dataset.name"
-                    :disabled="generatingGraph"
+                    :disabled="loadingGraph"
                     @click="selectDataset(option)"
                   >{{ option.name }}</button>
                 </div>
@@ -184,16 +209,22 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </header>
 
         <p v-if="graphError" role="alert">{{ graphError }}</p>
-        <div v-if="generatingGraph" class="empty-graph" role="status">
-          Generando el grafo…
+        <div v-if="loadingGraph || graphHtml" class="graph-stage">
+          <iframe
+            v-if="graphHtml"
+            ref="graphFrame"
+            class="graph-frame"
+            :class="{ 'graph-frame-pending': !viewerReady }"
+            title="Grafo de interacciones entre proteínas"
+            :srcdoc="graphHtml"
+            sandbox="allow-scripts"
+          ></iframe>
+          <div v-if="loadingGraph" class="empty-graph" role="status">
+            <img class="mascot mascot-loading" src="/images/mascot.png" alt="" />
+            <h2>Generando el grafo…</h2>
+            <p>Estamos preparando las conexiones del dataset.</p>
+          </div>
         </div>
-        <iframe
-          v-else-if="graphHtml"
-          class="graph-frame"
-          title="Grafo de interacciones entre proteínas"
-          :srcdoc="graphHtml"
-          sandbox="allow-scripts"
-        ></iframe>
         <img
           v-else-if="graphImageUrl"
           class="graph-image"
@@ -202,14 +233,16 @@ function dismissPickerOnBlur(event: FocusEvent) {
         />
         <div v-else class="empty-graph">
           <img class="mascot" src="/images/mascot.png" alt="Mascota de Prote-Prote" />
-          <template v-if="mode === 'neighborhood'">
-            <h2>Explora las conexiones de una proteína</h2>
-            <p>Ingresa su identificador y selecciona la distancia máxima para el subgrafo.</p>
-          </template>
-          <template v-else>
-            <h2>Camino más corto</h2>
-            <p>Ingresa las proteínas de origen y destino para consultar la ruta.</p>
-          </template>
+          <h2>Visualiza la red de proteínas</h2>
+          <p>
+            Elige el límite de nodos y pulsa <strong>Generar grafo</strong>.
+            Marca <strong>Modo interactivo</strong> para acercarte y leer los IDs,
+            o desmárcalo para ver una imagen.
+          </p>
+          <p v-if="mode === 'neighborhood'">
+            Para explorar una proteína, ingresa su ID y elige la distancia máxima del subgrafo.
+          </p>
+          <p v-else>Para consultar una ruta, ingresa las proteínas de origen y destino.</p>
         </div>
       </section>
 
@@ -262,15 +295,19 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
 .visualizer :is(button, input):focus-visible { outline: 2px solid #08485d; outline-offset: 3px; }
 
+.graph-stage { display: grid; flex: 1; min-width: 0; }
+.graph-stage > * { grid-area: 1 / 1; }
+
 .graph-frame {
   display: block;
   width: 100%;
+  height: 100%;
   min-height: 360px;
-  flex: 1;
   border: 0;
   background: transparent;
 }
 
+.graph-frame-pending { visibility: hidden; }
 .graph-image { display: block; width: 100%; min-height: 0; max-height: 65dvh; flex: 1; object-fit: contain; }
 
 .graph-header {
@@ -473,8 +510,19 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
 .empty-graph { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; padding: 12px; text-align: center; }
 .mascot { width: clamp(90px, min(14vw, 24dvh), 190px); height: auto; margin-bottom: clamp(8px, 2dvh, 22px); object-fit: contain; }
+.mascot-loading { animation: mascot-float 1.6s ease-in-out infinite; }
+
+@keyframes mascot-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mascot-loading { animation: none; }
+}
+
 .empty-graph h2 { margin: 0; font-size: clamp(1.15rem, 1.8vw, 1.85rem); font-weight: 700; line-height: 1.25; }
-.empty-graph p { margin: clamp(8px, 1.6dvh, 20px) 0 0; font-size: clamp(1rem, 1.2vw, 1.2rem); line-height: 1.4; }
+.empty-graph p { max-width: 44ch; margin: clamp(8px, 1.6dvh, 20px) 0 0; font-size: clamp(1rem, 1.2vw, 1.2rem); line-height: 1.4; }
 
 .details-panel { padding: clamp(10px, 2dvh, 22px) clamp(10px, 1.4vw, 22px); }
 .details-panel h2 { margin: 0 0 clamp(8px, 1.5dvh, 18px); font-size: clamp(1.25rem, 1.65vw, 1.75rem); font-weight: 700; line-height: 1.15; }
