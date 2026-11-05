@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import BackToMenu from '../components/BackToMenu.vue'
 import { formatCount, type Dataset } from '../datasets'
+import { useDatasetGraph } from '../composables/useDatasetGraph'
 
 defineProps<{ datasets: readonly Dataset[] }>()
 const dataset = defineModel<Dataset>({ required: true })
@@ -12,6 +13,29 @@ const destination = ref('')
 const distanceLevel = ref(2)
 const pickerOpen = ref(false)
 const pickerTrigger = ref<HTMLButtonElement | null>(null)
+
+const { graphHtml, graphImageUrl, graphError, generatingGraph, generateGraph, clearGraph } = useDatasetGraph()
+const nodeLimit = ref<number | null>(100)
+const interactiveLimit = 100
+const interactive = ref(true)
+const loadWarning = ref<HTMLDialogElement | null>(null)
+
+watch(nodeLimit, (limit) => {
+  if (typeof limit === 'number') interactive.value = limit <= interactiveLimit
+})
+
+function requestGraph(confirmInteractive = false) {
+  const limit = nodeLimit.value
+  if (generatingGraph.value || typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 1500) return
+
+  if (interactive.value && limit > interactiveLimit && !confirmInteractive) {
+    loadWarning.value?.showModal()
+    return
+  }
+
+  loadWarning.value?.close()
+  void generateGraph(dataset.value, limit, interactive.value)
+}
 
 function swapProteins() {
   const previousOrigin = origin.value
@@ -30,6 +54,7 @@ function closePicker() {
 }
 
 function selectDataset(option: Dataset) {
+  if (option.name !== dataset.value.name) clearGraph()
   dataset.value = option
   closePicker()
 }
@@ -49,9 +74,19 @@ function dismissPickerOnBlur(event: FocusEvent) {
         <BackToMenu @back="emit('back')" />
         <h2>Parámetros</h2>
         <label class="field-label" for="node-limit">Límite máximo de nodos</label>
-        <input id="node-limit" class="protein-input" type="number" min="1" max="1500" placeholder="100" />
-        <button class="graph-action" type="button" disabled>Generar grafo</button>
-        <p class="node-note">Hasta 1500 nodos para una visualización óptima.</p>
+        <input id="node-limit" class="protein-input" type="number" min="1" max="1500" placeholder="100" v-model.number="nodeLimit" />
+        <label class="field-label interactive-option">
+          <input v-model="interactive" type="checkbox" />
+          Modo interactivo
+        </label>
+        <button
+          class="graph-action dataset-graph-action"
+          type="button"
+          :disabled="generatingGraph || typeof nodeLimit !== 'number' || !Number.isInteger(nodeLimit) || nodeLimit < 1 || nodeLimit > 1500"
+          @click="requestGraph()"
+        >
+          {{ generatingGraph ? 'Generando…' : 'Generar grafo' }}
+        </button>
 
         <div class="mode-switch" aria-label="Modo de exploración">
           <button type="button" :aria-pressed="mode === 'neighborhood'" @click="mode = 'neighborhood'">Explorar entorno</button>
@@ -106,6 +141,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
                 class="dataset-trigger"
                 type="button"
                 :aria-expanded="pickerOpen"
+                :disabled="generatingGraph"
                 aria-controls="visualizer-dataset-picker"
                 @click="pickerOpen = !pickerOpen"
               >
@@ -119,6 +155,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
                     :key="option.name"
                     type="button"
                     :aria-pressed="option.name === dataset.name"
+                    :disabled="generatingGraph"
                     @click="selectDataset(option)"
                   >{{ option.name }}</button>
                 </div>
@@ -146,7 +183,24 @@ function dismissPickerOnBlur(event: FocusEvent) {
           </div>
         </header>
 
-        <div class="empty-graph">
+        <p v-if="graphError" role="alert">{{ graphError }}</p>
+        <div v-if="generatingGraph" class="empty-graph" role="status">
+          Generando el grafo…
+        </div>
+        <iframe
+          v-else-if="graphHtml"
+          class="graph-frame"
+          title="Grafo de interacciones entre proteínas"
+          :srcdoc="graphHtml"
+          sandbox="allow-scripts"
+        ></iframe>
+        <img
+          v-else-if="graphImageUrl"
+          class="graph-image"
+          :src="graphImageUrl"
+          alt="Imagen de la red de interacciones entre proteínas"
+        />
+        <div v-else class="empty-graph">
           <img class="mascot" src="/images/mascot.png" alt="Mascota de Prote-Prote" />
           <template v-if="mode === 'neighborhood'">
             <h2>Explora las conexiones de una proteína</h2>
@@ -184,6 +238,16 @@ function dismissPickerOnBlur(event: FocusEvent) {
         <button class="reset-path" type="button" @click="resetPath">Nueva consulta</button>
       </aside>
     </div>
+    <dialog ref="loadWarning" class="load-warning" aria-labelledby="load-warning-title" aria-describedby="load-warning-message">
+      <h2 id="load-warning-title">El grafo puede tardar en cargar</h2>
+      <p id="load-warning-message">
+        Pediste hasta {{ nodeLimit }} nodos. El modo interactivo puede tardar más con más de {{ interactiveLimit }} nodos.
+      </p>
+      <form method="dialog" class="load-warning-actions">
+        <button class="reset-path" autofocus>Cancelar</button>
+        <button class="graph-action" type="button" @click="requestGraph(true)">Generar interactivo</button>
+      </form>
+    </dialog>
   </section>
 </template>
 
@@ -197,6 +261,17 @@ function dismissPickerOnBlur(event: FocusEvent) {
 }
 
 .visualizer :is(button, input):focus-visible { outline: 2px solid #08485d; outline-offset: 3px; }
+
+.graph-frame {
+  display: block;
+  width: 100%;
+  min-height: 360px;
+  flex: 1;
+  border: 0;
+  background: transparent;
+}
+
+.graph-image { display: block; width: 100%; min-height: 0; max-height: 65dvh; flex: 1; object-fit: contain; }
 
 .graph-header {
   display: flex;
@@ -359,15 +434,9 @@ function dismissPickerOnBlur(event: FocusEvent) {
 }
 
 .graph-action:disabled { cursor: not-allowed; opacity: 0.8; }
-.node-note {
-  margin: 6px 0 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgb(43 100 104 / 25%);
-  color: #34535e;
-  font-size: 0.75rem;
-  line-height: 1.35;
-  text-align: center;
-}
+.interactive-option { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.interactive-option input { margin: 0; accent-color: #16566d; }
+.dataset-graph-action { margin-bottom: 16px; }
 .swap-button, .reset-path {
   align-self: center;
   border: 1px solid #8aafbb;
@@ -380,6 +449,19 @@ function dismissPickerOnBlur(event: FocusEvent) {
 }
 .swap-button { margin: 0 0 8px; }
 .reset-path { display: block; margin: 16px auto 0; padding: 6px 14px; }
+.load-warning {
+  width: min(440px, calc(100% - 32px));
+  padding: 20px;
+  border: 1px solid #8aafbb;
+  border-radius: 16px;
+  background: #e4f7fb;
+  color: #12333f;
+}
+.load-warning::backdrop { background: rgb(18 51 63 / 55%); }
+.load-warning h2 { margin: 0 0 8px; font-size: 1.25rem; }
+.load-warning p { margin: 0 0 16px; }
+.load-warning-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.load-warning-actions button { width: auto; margin: 0; }
 
 .graph-panel { display: flex; flex-direction: column; background: linear-gradient(155deg, rgb(180 231 238 / 58%), rgb(154 217 227 / 43%) 52%, rgb(171 230 233 / 54%)); }
 .graph-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 14px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }

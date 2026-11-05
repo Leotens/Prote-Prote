@@ -44,6 +44,10 @@ export async function listStoredDatasets(): Promise<Dataset[]> {
   return records.map(({ dataset }) => dataset)
 }
 
+export function getStoredDataset(name: string): Promise<StoredDataset | undefined> {
+  return runTransaction('readonly', (store) => store.get(name))
+}
+
 export async function saveStoredDataset(record: StoredDataset): Promise<void> {
   await runTransaction('readwrite', (store) => store.put(record))
 }
