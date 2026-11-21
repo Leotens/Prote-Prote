@@ -1,9 +1,19 @@
-import { onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 import type { Dataset } from '../datasets'
-import { requestComparisonSubgraph, requestProteinComparison, type ProteinComparisonResult } from '../infrastructure/datasetsApi'
-import { getStoredDataset } from '../infrastructure/datasetsStorage'
+import {
+  requestComparisonSubgraph,
+  requestDatasetProteins,
+  requestProteinComparison,
+  requestProteinMstComparison,
+  type ProteinComparisonMst,
+  type ProteinComparisonResult,
+} from '../infrastructure/datasetsApi'
+import { getStoredDataset, saveDatasetProteins } from '../infrastructure/datasetsStorage'
 
-export function useProteinComparison() {
+export function useProteinComparison(dataset: Ref<Dataset>) {
+  const proteins = ref<string[]>([])
+  const loadingProteins = ref(false)
+  const proteinListError = ref('')
   const comparisonResult = ref<ProteinComparisonResult | null>(null)
   const comparisonError = ref('')
   const comparing = ref(false)
@@ -12,8 +22,37 @@ export function useProteinComparison() {
   const generatingComparisonSubgraph = ref(false)
   const downloadingComparisonSubgraph = ref(false)
   const comparisonSubgraphCounts = ref<{ nodes: number, edges: number } | null>(null)
-  const comparisonGraphMode = ref<'comparison' | 'expanded'>('comparison')
+  const mstComparisonResult = ref<ProteinComparisonMst | null>(null)
+  const comparisonGraphMode = ref<'comparison' | 'expanded' | 'mst'>('comparison')
   let pendingComparison: AbortController | undefined
+  let pendingList: AbortController | undefined
+
+  async function loadProteins() {
+    pendingList?.abort()
+    const controller = new AbortController()
+    pendingList = controller
+    proteins.value = []
+    proteinListError.value = ''
+    loadingProteins.value = true
+    try {
+      const record = await getStoredDataset(dataset.value.name)
+      if (!record) throw new Error('No se pudo recuperar el dataset guardado en este navegador.')
+      if (record.proteins) {
+        proteins.value = record.proteins
+        return
+      }
+      const response = await requestDatasetProteins(record.file, record.hasHeader, controller.signal)
+      if (controller.signal.aborted) return
+      proteins.value = response.proteins
+      await saveDatasetProteins(record, response.proteins)
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        proteinListError.value = error instanceof Error ? error.message : 'No se pudieron cargar las proteínas.'
+      }
+    } finally {
+      if (pendingList === controller) loadingProteins.value = false
+    }
+  }
 
   function clearComparison() {
     pendingComparison?.abort()
@@ -23,6 +62,7 @@ export function useProteinComparison() {
     comparisonSubgraphHtml.value = ''
     comparisonSubgraphError.value = ''
     comparisonSubgraphCounts.value = null
+    mstComparisonResult.value = null
     comparisonGraphMode.value = 'comparison'
     comparing.value = false
     generatingComparisonSubgraph.value = false
@@ -32,19 +72,36 @@ export function useProteinComparison() {
     dataset: Dataset,
     proteinA: string,
     proteinB: string,
-    viewMode: 'comparison' | 'expanded' = 'comparison',
+    viewMode: 'comparison' | 'expanded' | 'mst' = 'comparison',
     distance = 1,
     nodeLimit = 300,
   ) {
     if (generatingComparisonSubgraph.value) return false
     generatingComparisonSubgraph.value = true
     comparisonSubgraphError.value = ''
+    comparisonGraphMode.value = viewMode
     const controller = new AbortController()
     pendingComparison = controller
 
     try {
       const record = await getStoredDataset(dataset.name)
       if (!record) throw new Error('No se pudo recuperar el dataset guardado en este navegador.')
+      if (viewMode === 'mst') {
+        const result = await requestProteinMstComparison(
+          record.file, record.hasHeader, proteinA, proteinB, controller.signal,
+        )
+        if (controller.signal.aborted) return false
+        mstComparisonResult.value = result
+        comparisonSubgraphHtml.value = ''
+        const nodes = new Set([...result.graph_a.nodes, ...result.graph_b.nodes])
+        const edges = new Set(
+          [...result.graph_a.edges, ...result.graph_b.edges]
+            .map(([source, target]) => [source, target].sort().join('\u0000')),
+        )
+        comparisonSubgraphCounts.value = { nodes: nodes.size, edges: edges.size }
+        return true
+      }
+      mstComparisonResult.value = null
       const result = await requestComparisonSubgraph(
         record.file, record.hasHeader, proteinA, proteinB,
         distance, nodeLimit, true, viewMode, controller.signal,
@@ -52,7 +109,6 @@ export function useProteinComparison() {
       if (controller.signal.aborted) return false
       comparisonSubgraphHtml.value = result.html ?? ''
       comparisonSubgraphCounts.value = { nodes: result.node_count, edges: result.edge_count }
-      comparisonGraphMode.value = viewMode
       return !!result.html
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -98,7 +154,7 @@ export function useProteinComparison() {
   }
 
   async function compare(dataset: Dataset, proteinA: string, proteinB: string) {
-    if (comparing.value) return
+    if (comparing.value || loadingProteins.value) return
 
     comparing.value = true
     comparisonResult.value = null
@@ -106,6 +162,7 @@ export function useProteinComparison() {
     comparisonSubgraphHtml.value = ''
     comparisonSubgraphError.value = ''
     comparisonSubgraphCounts.value = null
+    mstComparisonResult.value = null
     const controller = new AbortController()
     pendingComparison = controller
 
@@ -131,15 +188,23 @@ export function useProteinComparison() {
     }
   }
 
-  onBeforeUnmount(clearComparison)
+  watch(() => dataset.value.name, loadProteins, { immediate: true })
+  onBeforeUnmount(() => {
+    pendingList?.abort()
+    clearComparison()
+  })
 
   return {
     comparisonResult,
+    proteins,
+    loadingProteins,
+    proteinListError,
     comparisonError,
     comparing,
     comparisonSubgraphHtml,
     comparisonSubgraphError,
     comparisonSubgraphCounts,
+    mstComparisonResult,
     comparisonGraphMode,
     generatingComparisonSubgraph,
     downloadingComparisonSubgraph,
@@ -147,5 +212,6 @@ export function useProteinComparison() {
     generateComparisonSubgraph,
     downloadComparisonSubgraph,
     clearComparison,
+    loadProteins,
   }
 }

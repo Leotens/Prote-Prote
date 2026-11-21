@@ -111,7 +111,7 @@ export async function requestComparisonSubgraph(
     distance: number,
     nodeLimit: number,
     interactive: boolean,
-    viewMode: 'comparison' | 'expanded',
+    viewMode: 'comparison' | 'expanded' | 'mst',
     signal: AbortSignal,
 ): Promise<ComparisonSubgraphResult> {
     const body = new FormData()

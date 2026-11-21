@@ -424,7 +424,7 @@ def generate_subgraph(
 
 def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str, details: dict | None = None, highlights: dict[str, str] | None = None) -> HTMLResponse:
     net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
-    net.set_options('{"physics":{"stabilization":{"iterations":100,"updateInterval":25}}}')
+    net.set_options('{"physics":{"stabilization":{"iterations":35,"updateInterval":10}}}')
     for node in nodes:
         is_origin = node == origin
         color = (highlights or {}).get(node, "#1550bd" if is_origin else "#ff8539")
@@ -442,9 +442,21 @@ def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin:
     html = net.generate_html().replace("</head>", styles + "</head>", 1)
     ready_script = """
     <script>
-      function notifyGraphReady() { window.parent.postMessage('prote-prote:graph-ready', '*'); }
-      if (nodes.length <= 1) { notifyGraphReady(); }
-      else { network.once('stabilizationIterationsDone', notifyGraphReady); }
+      let graphReadyNotified = false;
+      function notifyGraphReady() {
+        if (graphReadyNotified) return;
+        graphReadyNotified = true;
+        network.stopSimulation();
+        network.fit({ animation: false });
+        window.parent.postMessage('prote-prote:graph-ready', '*');
+      }
+      if (nodes.length <= 1) {
+        window.requestAnimationFrame(notifyGraphReady);
+      } else {
+        network.once('stabilizationIterationsDone', notifyGraphReady);
+        network.once('stabilized', notifyGraphReady);
+        window.setTimeout(notifyGraphReady, 8000);
+      }
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
@@ -741,8 +753,27 @@ def generate_comparison_subgraph(
     comparison = compare_proteins(proteins, edges, protein_a, protein_b)
     protein_a = comparison["protein_a"]["id"]
     protein_b = comparison["protein_b"]["id"]
-    if view_mode not in {"comparison", "expanded"}:
+    if view_mode not in {"comparison", "expanded", "mst"}:
         raise HTTPException(status_code=422, detail="La vista solicitada no es válida.")
+    if view_mode == "mst":
+        mst = compare_proteins_mst(proteins, protein_a, protein_b)
+        nodes = list(dict.fromkeys([*mst["graph_a"]["nodes"], *mst["graph_b"]["nodes"]]))
+        visible_edges = list(dict.fromkeys(
+            tuple(sorted(edge))
+            for edge in [*mst["graph_a"]["edges"], *mst["graph_b"]["edges"]]
+        ))
+        shared = set(comparison["shared_neighbors"])
+        details = comparison_node_details(proteins, edges, set(nodes))
+        result = {"node_count": len(nodes), "edge_count": len(visible_edges)}
+        if interactive:
+            renderer = render_expanded_comparison_html(
+                nodes, visible_edges, protein_a, protein_b, shared, details,
+            )
+            result["html"] = renderer.body.decode("utf-8")
+        else:
+            image = render_comparison_image(nodes, visible_edges, protein_a, protein_b, shared)
+            result["image_base64"] = b64encode(image.body).decode("ascii")
+        return result
     nodes = multi_source_neighborhood(proteins, (protein_a, protein_b), distance, node_limit)
     selected = set(nodes)
     visible_edges = [(source, target) for source, target in edges if source in selected and target in selected]

@@ -45,6 +45,16 @@ class ComparisonSubgraphTests(unittest.TestCase):
         self.assertIn("prote-prote:comparison-graph-ready", result["html"])
         self.assertEqual(result["node_count"], 6)
 
+    def test_mst_view_keeps_nodes_and_removes_cycle_edges(self):
+        dataset = UploadFile(
+            filename="proteins.csv",
+            file=BytesIO(b"A,C\nA,D\nA,F\nC,D\nB,C\nB,E\nB,G\nC,E\n"),
+        )
+        result = generate_comparison_subgraph(dataset, False, "A", "B", 1, 20, True, "mst")
+        self.assertIn("prote-prote:comparison-graph-ready", result["html"])
+        self.assertEqual(result["node_count"], 7)
+        self.assertEqual(result["edge_count"], 6)
+
     def test_image_endpoint_returns_png(self):
         result = generate_comparison_subgraph(self.dataset(), False, "A", "B", 1, 20, False)
         self.assertTrue(b64decode(result["image_base64"]).startswith(b"\x89PNG\r\n\x1a\n"))

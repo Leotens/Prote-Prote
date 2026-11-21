@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import BackToMenu from '../components/BackToMenu.vue'
+import ProteinComparisonGraph from '../components/ProteinComparisonGraph.vue'
+import ProteinSelector from '../components/ProteinSelector.vue'
 import { useProteinComparison } from '../composables/useProteinComparison'
 import { formatCount, type Dataset } from '../datasets'
 import type { ProteinDetails } from '../infrastructure/datasetsApi'
@@ -20,11 +22,15 @@ const selectedComparisonProtein = ref<ProteinDetails | null>(null)
 const displayMode = ref<'summary' | 'subgraph'>('summary')
 const {
   comparisonResult,
+  proteins,
+  loadingProteins,
+  proteinListError,
   comparisonError,
   comparing,
   comparisonSubgraphHtml,
   comparisonSubgraphError,
   comparisonSubgraphCounts,
+  mstComparisonResult,
   comparisonGraphMode,
   generatingComparisonSubgraph,
   downloadingComparisonSubgraph,
@@ -32,7 +38,7 @@ const {
   generateComparisonSubgraph,
   downloadComparisonSubgraph,
   clearComparison,
-} = useProteinComparison()
+} = useProteinComparison(dataset)
 const proteinCards = computed(() => [
   { label: 'A', details: comparisonResult.value?.protein_a },
   { label: 'B', details: comparisonResult.value?.protein_b },
@@ -44,6 +50,7 @@ const exclusiveNeighborsA = computed(() => comparisonResult.value
 const exclusiveNeighborsB = computed(() => comparisonResult.value
   ? comparisonResult.value.protein_b.neighbors.filter(neighbor => !sharedNeighborSet.value.has(neighbor)).length
   : 0)
+const hasComparisonGraph = computed(() => !!comparisonSubgraphHtml.value || !!mstComparisonResult.value)
 
 function componentNumber(label: string) {
   if (!comparisonResult.value) return '--'
@@ -75,7 +82,7 @@ async function requestComparisonSubgraph() {
   await generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value)
 }
 
-function changeComparisonGraphMode(mode: 'comparison' | 'expanded') {
+function changeComparisonGraphMode(mode: 'comparison' | 'expanded' | 'mst') {
   if (mode === comparisonGraphMode.value || generatingComparisonSubgraph.value) return
   comparisonGraphReady.value = false
   selectedComparisonProtein.value = null
@@ -132,21 +139,31 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
     <header class="compare-header">
       <div class="comparison-inputs">
-        <label>
-          <span>Proteína A</span>
-          <input v-model.trim="proteinA" type="text" placeholder="Ejemplo: 7157" @keydown.enter="requestComparison" />
-        </label>
-        <label>
-          <span>Proteína B</span>
-          <input v-model.trim="proteinB" type="text" placeholder="Ejemplo: 4609" @keydown.enter="requestComparison" />
-        </label>
+        <ProteinSelector
+          id="compare-protein-a"
+          v-model="proteinA"
+          label="Proteína A"
+          :proteins="proteins"
+          :disabled="loadingProteins || comparing"
+          placeholder="Ejemplo: 7157"
+        />
+        <ProteinSelector
+          id="compare-protein-b"
+          v-model="proteinB"
+          label="Proteína B"
+          :proteins="proteins"
+          :disabled="loadingProteins || comparing"
+          placeholder="Ejemplo: 4609"
+        />
         <button
           class="compare-button"
           type="button"
-          :disabled="comparing || !proteinA.trim() || !proteinB.trim()"
+          :disabled="loadingProteins || comparing || !proteins.length || !proteinA.trim() || !proteinB.trim()"
           @click="requestComparison"
         >{{ comparing ? 'Comparando…' : 'Comparar' }}</button>
       </div>
+      <p v-if="loadingProteins" class="comparison-status" role="status">Cargando proteínas del dataset…</p>
+      <p v-else-if="proteinListError" class="comparison-error" role="alert">{{ proteinListError }}</p>
       <p v-if="comparisonError" class="comparison-error" role="alert">{{ comparisonError }}</p>
     </header>
 
@@ -293,9 +310,15 @@ function dismissPickerOnBlur(event: FocusEvent) {
                   :disabled="generatingComparisonSubgraph"
                   @click="changeComparisonGraphMode('expanded')"
                 >Red expandida</button>
+                <button
+                  type="button"
+                  :aria-pressed="comparisonGraphMode === 'mst'"
+                  :disabled="generatingComparisonSubgraph"
+                  @click="changeComparisonGraphMode('mst')"
+                >Vista simplificada MST</button>
               </div>
             </div>
-            <div class="graph-toolbar" aria-label="Herramientas del subgrafo">
+            <div v-if="comparisonGraphMode !== 'mst'" class="graph-toolbar" aria-label="Herramientas del subgrafo">
               <button type="button" aria-label="Acercar" :disabled="!comparisonGraphReady" @click="controlComparisonGraph('zoom-in')">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7v7M7 10.5h7"/></svg>
               </button>
@@ -308,7 +331,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
                 :aria-label="isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'"
                 :title="isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'"
                 :aria-pressed="isFullscreen"
-                :disabled="!comparisonSubgraphHtml"
+                :disabled="!hasComparisonGraph"
                 @click="requestFullscreen"
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg>
@@ -317,7 +340,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
                 type="button"
                 aria-label="Descargar subgrafo"
                 :title="downloadingComparisonSubgraph ? 'Preparando imagen PNG…' : 'Descargar subgrafo como PNG'"
-                :disabled="!comparisonSubgraphHtml || downloadingComparisonSubgraph"
+                :disabled="!hasComparisonGraph || downloadingComparisonSubgraph"
                 @click="requestComparisonDownload"
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
@@ -328,12 +351,25 @@ function dismissPickerOnBlur(event: FocusEvent) {
           <div v-if="generatingComparisonSubgraph" class="empty-subgraph" role="status">
             <img src="/images/mascot.png" alt="Mascota de Prote-Prote" />
             <h2>Generando subgrafo conjunto…</h2>
-            <p>BFS multiorigen está explorando el entorno de ambas proteínas.</p>
+            <p v-if="comparisonGraphMode === 'mst'">Prim está simplificando los vecindarios sin eliminar proteínas.</p>
+            <p v-else>BFS multiorigen está explorando el entorno de ambas proteínas.</p>
           </div>
           <div v-else-if="comparisonSubgraphError" class="empty-subgraph" role="alert">
             <img src="/images/mascot.png" alt="Mascota de Prote-Prote" />
             <h2>No se pudo generar el subgrafo</h2>
             <p>{{ comparisonSubgraphError }}</p>
+          </div>
+          <div v-else-if="comparisonGraphMode === 'mst' && mstComparisonResult" class="mst-comparison-grid">
+            <ProteinComparisonGraph
+              :graph="mstComparisonResult.graph_a"
+              :protein-id="mstComparisonResult.protein_a.id"
+              side="A"
+            />
+            <ProteinComparisonGraph
+              :graph="mstComparisonResult.graph_b"
+              :protein-id="mstComparisonResult.protein_b.id"
+              side="B"
+            />
           </div>
           <div v-else-if="comparisonSubgraphHtml" class="comparison-graph-area">
             <iframe
@@ -353,7 +389,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
             <p>Compara dos proteínas para visualizar aquí sus conexiones.</p>
           </div>
 
-          <div v-if="comparisonSubgraphHtml" class="graph-legend" aria-label="Leyenda de colores del grafo">
+          <div v-if="hasComparisonGraph" class="graph-legend" aria-label="Leyenda de colores del grafo">
             <strong>Leyenda</strong>
             <span><i class="legend-dot protein-a-color"></i>Proteína A</span>
             <span><i class="legend-dot protein-b-color"></i>Proteína B</span>
@@ -476,6 +512,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .empty-subgraph p { margin: 8px 0 0; color: #34535e; font-size: clamp(0.95rem, 1.2vw, 1.15rem); }
 .comparison-graph-frame { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: transparent; }
 .comparison-graph-area { position: relative; min-width: 0; min-height: 0; }
+.mst-comparison-grid { display: grid; min-width: 0; min-height: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .graph-loading-overlay { position: absolute; z-index: 2; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgb(181 229 237 / 82%); color: #164c5c; font-weight: 700; }
 .loading-spinner { width: 24px; height: 24px; border: 3px solid rgb(22 76 92 / 20%); border-top-color: #16566d; border-radius: 50%; animation: comparison-spin 700ms linear infinite; }
 @keyframes comparison-spin { to { transform: rotate(360deg); } }
@@ -508,6 +545,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
   .subgraph-heading { align-items: stretch; flex-direction: column; }
   .graph-toolbar { align-self: flex-end; }
   .graph-legend { gap: 6px 10px; font-size: 0.72rem; }
+  .mst-comparison-grid { min-height: 520px; grid-template-columns: 1fr; grid-template-rows: repeat(2, minmax(250px, 1fr)); }
 }
 
 @media (max-width: 520px) {
