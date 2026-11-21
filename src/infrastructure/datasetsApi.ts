@@ -8,6 +8,43 @@ interface UploadResult {
 
 type GraphResponse = { html: string } | { image: Blob }
 
+export interface ShortestPathResult {
+    path: string[]
+    length: number | null
+    elapsed_ms: number
+    html?: string
+    image_base64?: string
+}
+
+export async function requestDatasetShortestPath(
+    file: File,
+    hasHeader: boolean,
+    origin: string,
+    destination: string,
+    nodeLimit: number,
+    interactive: boolean,
+    signal: AbortSignal,
+): Promise<ShortestPathResult> {
+    const body = new FormData()
+    body.append('file', file)
+    body.append('has_header', String(hasHeader))
+    body.append('origin', origin)
+    body.append('destination', destination)
+    body.append('node_limit', String(nodeLimit))
+    body.append('interactive', String(interactive))
+
+    const response = await fetch('/api/datasets/shortest-path', { method: 'POST', body, signal })
+    if (!response.ok) {
+        let message = `No se pudo encontrar el camino (HTTP ${response.status}).`
+        try {
+            const result = await response.json() as { detail?: string }
+            if (typeof result.detail === 'string') message = result.detail
+        } catch { /* Conserva el mensaje HTTP si la respuesta no es JSON. */ }
+        throw new Error(message)
+    }
+    return response.json()
+}
+
 export async function requestDatasetGraph(
     file: File,
     hasHeader: boolean,

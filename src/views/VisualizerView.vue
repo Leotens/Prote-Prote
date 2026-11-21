@@ -17,6 +17,10 @@ const pickerTrigger = ref<HTMLButtonElement | null>(null)
 
 const {
   graphHtml,
+  pathResult,
+  pathStatus,
+  subgraphKind,
+  generateShortestPath,
   fullGraphHtml,
   fullGraphImageUrl,
   subgraphHtml,
@@ -40,6 +44,8 @@ const generatedNodeLimit = ref<number | null>(null)
 const generatedInteractive = ref(true)
 const generatedSubgraphProtein = ref('')
 const generatedSubgraphDistance = ref(2)
+const queriedOrigin = ref('')
+const queriedDestination = ref('')
 const loadWarning = ref<HTMLDialogElement | null>(null)
 const graphFrame = ref<HTMLIFrameElement | null>(null)
 const subgraphFrame = ref<HTMLIFrameElement | null>(null)
@@ -69,7 +75,7 @@ watch(subgraphHtml, (html, _, onCleanup) => {
     if (subgraphViewerReady.value) return
 
     subgraphViewerReady.value = true
-    graphError.value = 'El visor interactivo tardó demasiado. Prueba con una distancia menor o usa el modo imagen.'
+    graphError.value = 'El visor interactivo tardó demasiado. Prueba con menos nodos o usa el modo imagen.'
   }, 5 * 60 * 1_000)
   onCleanup(() => window.clearTimeout(timeout))
 })
@@ -105,17 +111,28 @@ function requestGraph(confirmInteractive = false) {
   void generateGraph(dataset.value, limit, interactive.value)
 }
 
-function requestSubgraph() {
+async function requestSubgraph() {
   const id = proteinId.value.trim()
   if (loadingGraph.value || !hasFullGraph.value || !id || generatedNodeLimit.value === null || !Number.isInteger(distanceLevel.value) || distanceLevel.value < 1 || distanceLevel.value > 3) return
-  generatedSubgraphProtein.value = id
-  generatedSubgraphDistance.value = distanceLevel.value
-  void generateSubgraph(dataset.value, id, distanceLevel.value, generatedNodeLimit.value, generatedInteractive.value)
+  const distance = distanceLevel.value
+  if (await generateSubgraph(dataset.value, id, distance, generatedNodeLimit.value, generatedInteractive.value)) {
+    generatedSubgraphProtein.value = id
+    generatedSubgraphDistance.value = distance
+  }
 }
 
 function requestGraphDownload() {
   if (generatedNodeLimit.value === null) return
   void downloadGraph(dataset.value, generatedNodeLimit.value, generatedSubgraphProtein.value, generatedSubgraphDistance.value)
+}
+
+function requestShortestPath() {
+  const start = origin.value.trim()
+  const end = destination.value.trim()
+  if (loadingGraph.value || !hasFullGraph.value || !start || !end || generatedNodeLimit.value === null) return
+  queriedOrigin.value = start
+  queriedDestination.value = end
+  void generateShortestPath(dataset.value, start, end, generatedNodeLimit.value, generatedInteractive.value)
 }
 
 function swapProteins() {
@@ -125,8 +142,15 @@ function swapProteins() {
 }
 
 function resetPath() {
+  if (loadingGraph.value) return
   origin.value = ''
   destination.value = ''
+  queriedOrigin.value = ''
+  queriedDestination.value = ''
+  pathResult.value = null
+  pathStatus.value = 'Sin consulta'
+  graphError.value = ''
+  showGraph('full')
 }
 
 function closePicker() {
@@ -205,13 +229,16 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
         <div v-show="mode === 'shortest-path'" class="mode-fields">
           <label class="field-label" for="origin-protein">Proteína de origen</label>
-          <input id="origin-protein" v-model="origin" class="protein-input" type="text" placeholder="Ejemplo: 7157" />
+          <input id="origin-protein" v-model="origin" class="protein-input" type="text" placeholder="Ejemplo: 7157" @keydown.enter="requestShortestPath" />
           <button class="swap-button" type="button" aria-label="Intercambiar origen y destino" @click="swapProteins">
             <span aria-hidden="true">⇅</span>
           </button>
           <label class="field-label" for="destination-protein">Proteína de destino</label>
-          <input id="destination-protein" v-model="destination" class="protein-input" type="text" placeholder="Ejemplo: 5728" />
-          <button class="graph-action" type="button" disabled>Encontrar camino</button>
+          <input id="destination-protein" v-model="destination" class="protein-input" type="text" placeholder="Ejemplo: 5728" @keydown.enter="requestShortestPath" />
+          <button class="graph-action" type="button" :disabled="loadingGraph || !hasFullGraph || !origin.trim() || !destination.trim()" @click="requestShortestPath">
+            {{ generatingGraph ? 'Buscando…' : 'Encontrar camino' }}
+          </button>
+          <p class="path-hint">Genera el grafo primero y consulta dos proteínas incluidas en él.</p>
         </div>
       </aside>
 
@@ -273,8 +300,8 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </header>
 
         <div v-if="hasSubgraph" class="graph-view-switch" aria-label="Vista del grafo">
-          <button type="button" :aria-pressed="activeGraph === 'full'" @click="showGraph('full')">Grafo generado</button>
-          <button type="button" :aria-pressed="activeGraph === 'subgraph'" @click="showGraph('subgraph')">Subgrafo</button>
+          <button type="button" :disabled="generatingGraph" :aria-pressed="activeGraph === 'full'" @click="showGraph('full')">Volver al grafo original</button>
+          <button type="button" :disabled="generatingGraph" :aria-pressed="activeGraph === 'subgraph'" @click="showGraph('subgraph')">{{ subgraphKind === 'shortest-path' ? 'Camino más corto' : 'Subgrafo' }}</button>
         </div>
 
         <p v-if="graphError" role="alert">{{ graphError }}</p>
@@ -328,7 +355,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
           <p v-if="mode === 'neighborhood'">
             Genera el grafo primero. Luego, ingresa el ID de una proteína incluida y elige la distancia máxima del subgrafo.
           </p>
-          <p v-else>Para consultar una ruta, ingresa las proteínas de origen y destino.</p>
+          <p v-else>Genera el grafo primero. Luego, ingresa dos proteínas incluidas para consultar su ruta más corta.</p>
         </div>
       </section>
 
@@ -346,15 +373,16 @@ function dismissPickerOnBlur(event: FocusEvent) {
       <aside v-else class="glass-panel details-panel">
         <h2>Resultados del camino</h2>
         <dl class="protein-details">
-          <div><dt>Proteína inicial</dt><dd>--</dd></div>
-          <div><dt>Proteína final</dt><dd>--</dd></div>
-          <div><dt>Longitud mínima</dt><dd>--</dd></div>
-          <div><dt>Proteínas en la ruta</dt><dd>--</dd></div>
-          <div><dt>Algoritmo</dt><dd>--</dd></div>
-          <div><dt>Tiempo</dt><dd>--</dd></div>
-          <div><dt>Estado</dt><dd>Sin consulta</dd></div>
+          <div><dt>Proteína inicial</dt><dd>{{ pathStatus === 'Sin consulta' ? '--' : queriedOrigin }}</dd></div>
+          <div><dt>Proteína final</dt><dd>{{ pathStatus === 'Sin consulta' ? '--' : queriedDestination }}</dd></div>
+          <div><dt>Longitud mínima</dt><dd>{{ pathResult?.length ?? '--' }}</dd></div>
+          <div><dt>Proteínas en la ruta</dt><dd>{{ pathResult ? pathResult.path.length : '--' }}</dd></div>
+          <div><dt>Algoritmo</dt><dd>{{ pathStatus === 'Sin consulta' ? '--' : 'BFS' }}</dd></div>
+          <div><dt>Tiempo BFS</dt><dd>{{ pathResult ? `${pathResult.elapsed_ms.toFixed(3)} ms` : '--' }}</dd></div>
+          <div><dt>Estado</dt><dd role="status">{{ pathStatus }}</dd></div>
         </dl>
-        <button class="reset-path" type="button" @click="resetPath">Nueva consulta</button>
+        <p v-if="pathResult?.path.length" class="path-route">{{ pathResult.path.join(' → ') }}</p>
+        <button class="reset-path" type="button" :disabled="loadingGraph" @click="resetPath">Nueva consulta</button>
       </aside>
     </div>
     <dialog ref="loadWarning" class="load-warning" aria-labelledby="load-warning-title" aria-describedby="load-warning-message">
@@ -621,6 +649,9 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .protein-details div { display: flex; justify-content: space-between; gap: 8px; padding: 8px 2px; border-bottom: 1px solid rgb(43 100 104 / 25%); font-size: clamp(0.95rem, 1vw, 1.05rem); }
 .protein-details dt, .protein-details dd { margin: 0; }
 .protein-details dd { color: #34535e; }
+.protein-details dd { text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.path-hint { font-size: 0.8rem; }
+.path-route { overflow-wrap: anywhere; line-height: 1.5; max-height: 180px; overflow-y: auto; }
 
 @media (max-width: 850px) {
   .visualizer-grid { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr); }

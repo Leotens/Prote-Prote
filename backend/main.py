@@ -1,8 +1,10 @@
 import csv
+from base64 import b64encode
 from io import BytesIO
 from math import sqrt
 from collections import deque
 from typing import Annotated
+from time import perf_counter
 
 import networkx as nx
 from fastapi import FastAPI, Form, HTTPException, UploadFile
@@ -241,12 +243,16 @@ def generate_subgraph(
     if not interactive:
         return render_graph_image(nodes, visible_edges)
 
+    return render_subgraph_html(nodes, visible_edges, protein_id)
+
+
+def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str) -> HTMLResponse:
     net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
     net.set_options('{"physics":{"stabilization":{"iterations":100,"updateInterval":25}}}')
     for node in nodes:
-        is_origin = node == protein_id
-        net.add_node(node, label=node, color="#1550bd" if is_origin else "#ff8539", title=f"Proteína central: {node}" if is_origin else node, size=32 if is_origin else 22)
-    for source, target in visible_edges:
+        is_origin = node == origin
+        net.add_node(node, label=node, color="#1550bd" if is_origin else "#ff8539", title=f"Proteína de origen: {node}" if is_origin else node, size=32 if is_origin else 22)
+    for source, target in edges:
         net.add_edge(source, target)
 
     styles = """
@@ -266,3 +272,56 @@ def generate_subgraph(
     """
     document, closing_tag, tail = html.rpartition("</body>")
     return HTMLResponse(document + ready_script + closing_tag + tail)
+
+
+def shortest_path(proteins: dict[str, list[str]], selected: set[str], origin: str, destination: str) -> list[str]:
+    parents: dict[str, str | None] = {origin: None}
+    queue = deque([origin])
+    while queue:
+        node = queue.popleft()
+        if node == destination:
+            path = []
+            while node is not None:
+                path.append(node)
+                node = parents[node]
+            return path[::-1]
+        for neighbor in proteins[node]:
+            if neighbor in selected and neighbor not in parents:
+                parents[neighbor] = node
+                queue.append(neighbor)
+    return []
+
+
+@app.post("/api/datasets/shortest-path")
+def generate_shortest_path(
+    file: UploadFile,
+    has_header: Annotated[bool, Form()],
+    origin: Annotated[str, Form()],
+    destination: Annotated[str, Form()],
+    node_limit: Annotated[int, Form(ge=1, le=1500)],
+    interactive: Annotated[bool, Form()] = True,
+):
+    proteins, _, _ = read_dataset(file, has_header)
+    origin, destination = origin.strip(), destination.strip()
+    if not origin or not destination:
+        raise HTTPException(status_code=422, detail="Ingresa las proteínas de origen y destino.")
+    selected = set(largest_component(proteins)[:node_limit])
+    for protein_id in (origin, destination):
+        if protein_id not in proteins:
+            raise HTTPException(status_code=404, detail=f"No se encontró la proteína {protein_id} en el dataset.")
+        if protein_id not in selected:
+            raise HTTPException(status_code=422, detail=f"La proteína {protein_id} no está entre los {node_limit} nodos del grafo generado. Aumenta el límite de nodos y vuelve a generarlo.")
+
+    started = perf_counter()
+    path = shortest_path(proteins, selected, origin, destination)
+    elapsed_ms = (perf_counter() - started) * 1000
+    result = {"path": path, "length": len(path) - 1 if path else None, "elapsed_ms": elapsed_ms}
+    if not path:
+        return result
+
+    path_edges = list(zip(path, path[1:]))
+    if interactive:
+        result["html"] = render_subgraph_html(path, path_edges, origin).body.decode("utf-8")
+    else:
+        result["image_base64"] = b64encode(render_graph_image(path, path_edges).body).decode("ascii")
+    return result

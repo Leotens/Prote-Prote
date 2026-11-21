@@ -1,6 +1,6 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import type { Dataset } from '../datasets'
-import { requestDatasetGraph, requestDatasetSubgraph } from '../infrastructure/datasetsApi'
+import { requestDatasetGraph, requestDatasetShortestPath, requestDatasetSubgraph, type ShortestPathResult } from '../infrastructure/datasetsApi'
 import { getStoredDataset } from '../infrastructure/datasetsStorage'
 
 export function useDatasetGraph() {
@@ -16,12 +16,20 @@ export function useDatasetGraph() {
   const graphError = ref('')
   const generatingGraph = ref(false)
   const downloadingGraph = ref(false)
+  const pathResult = ref<ShortestPathResult | null>(null)
+  const pathStatus = ref('Sin consulta')
+  const displayedPath = ref<string[]>([])
+  const subgraphKind = ref<'neighborhood' | 'shortest-path'>('neighborhood')
   let pendingGraph: AbortController | undefined
 
   function clearGraph() {
     fullGraphHtml.value = ''
     subgraphHtml.value = ''
     graphError.value = ''
+    pathResult.value = null
+    pathStatus.value = 'Sin consulta'
+    displayedPath.value = []
+    subgraphKind.value = 'neighborhood'
     if (fullGraphImageUrl.value) URL.revokeObjectURL(fullGraphImageUrl.value)
     if (subgraphImageUrl.value) URL.revokeObjectURL(subgraphImageUrl.value)
     fullGraphImageUrl.value = ''
@@ -82,9 +90,6 @@ export function useDatasetGraph() {
 
     generatingGraph.value = true
     graphError.value = ''
-    subgraphHtml.value = ''
-    if (subgraphImageUrl.value) URL.revokeObjectURL(subgraphImageUrl.value)
-    subgraphImageUrl.value = ''
     const controller = new AbortController()
     pendingGraph = controller
 
@@ -103,12 +108,57 @@ export function useDatasetGraph() {
       )
       if (controller.signal.aborted) return
 
+      subgraphHtml.value = ''
+      if (subgraphImageUrl.value) URL.revokeObjectURL(subgraphImageUrl.value)
+      subgraphImageUrl.value = ''
       if ('html' in result) subgraphHtml.value = result.html
       else subgraphImageUrl.value = URL.createObjectURL(result.image)
+      subgraphKind.value = 'neighborhood'
       activeGraph.value = 'subgraph'
+      return true
     } catch (error) {
       if (!controller.signal.aborted) {
         graphError.value = error instanceof Error ? error.message : 'Error al generar el subgrafo.'
+      }
+    } finally {
+      pendingGraph = undefined
+      generatingGraph.value = false
+    }
+  }
+
+  async function generateShortestPath(dataset: Dataset, origin: string, destination: string, nodeLimit: number, interactive: boolean) {
+    if (generatingGraph.value) return
+
+    generatingGraph.value = true
+    graphError.value = ''
+    pathResult.value = null
+    pathStatus.value = 'Buscando…'
+    const controller = new AbortController()
+    pendingGraph = controller
+
+    try {
+      const record = await getStoredDataset(dataset.name)
+      if (!record) throw new Error('No se pudo recuperar el dataset guardado en este navegador.')
+      const result = await requestDatasetShortestPath(record.file, record.hasHeader, origin, destination, nodeLimit, interactive, controller.signal)
+      if (controller.signal.aborted) return
+
+      pathResult.value = result
+      pathStatus.value = result.path.length ? 'Camino encontrado' : 'Sin camino en el grafo generado'
+      if (!result.path.length) {
+        activeGraph.value = 'full'
+        return
+      }
+
+      subgraphHtml.value = result.html ?? ''
+      if (subgraphImageUrl.value) URL.revokeObjectURL(subgraphImageUrl.value)
+      subgraphImageUrl.value = result.image_base64 ? `data:image/png;base64,${result.image_base64}` : ''
+      displayedPath.value = result.path
+      subgraphKind.value = 'shortest-path'
+      activeGraph.value = 'subgraph'
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        pathStatus.value = 'Consulta fallida'
+        graphError.value = error instanceof Error ? error.message : 'Error al encontrar el camino.'
       }
     } finally {
       pendingGraph = undefined
@@ -125,6 +175,20 @@ export function useDatasetGraph() {
     const controller = new AbortController()
 
     try {
+      if (graphToDownload === 'subgraph' && subgraphKind.value === 'shortest-path') {
+        const path = displayedPath.value
+        const record = await getStoredDataset(dataset.name)
+        if (!record || !path[0] || !path[path.length - 1]) throw new Error('No se pudo recuperar la ruta mostrada.')
+        const result = await requestDatasetShortestPath(record.file, record.hasHeader, path[0], path[path.length - 1]!, nodeLimit, false, controller.signal)
+        if (!result.image_base64) throw new Error('No se pudo preparar la imagen PNG.')
+        const anchor = document.createElement('a')
+        anchor.href = `data:image/png;base64,${result.image_base64}`
+        anchor.download = 'camino-mas-corto.png'
+        document.body.append(anchor)
+        anchor.click()
+        anchor.remove()
+        return
+      }
       const record = await getStoredDataset(dataset.name)
       if (!record) throw new Error('No se pudo recuperar el dataset guardado en este navegador.')
 
@@ -151,6 +215,10 @@ export function useDatasetGraph() {
 
   return {
     graphHtml,
+    pathResult,
+    pathStatus,
+    subgraphKind,
+    generateShortestPath,
     graphImageUrl,
     fullGraphHtml,
     fullGraphImageUrl,
