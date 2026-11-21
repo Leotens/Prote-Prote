@@ -4,6 +4,8 @@ interface StoredDataset {
   dataset: Dataset
   file: File
   hasHeader: boolean
+  revision?: string
+  proteins?: string[]
 }
 
 const storeName = 'datasets'
@@ -49,7 +51,29 @@ export function getStoredDataset(name: string): Promise<StoredDataset | undefine
 }
 
 export async function saveStoredDataset(record: StoredDataset): Promise<void> {
-  await runTransaction('readwrite', (store) => store.put(record))
+  await runTransaction('readwrite', (store) => store.put({ ...record, revision: crypto.randomUUID(), proteins: undefined }))
+}
+
+export async function saveDatasetProteins(record: StoredDataset, proteins: string[]): Promise<void> {
+  const database = await openDatabase()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(storeName, 'readwrite')
+      const store = transaction.objectStore(storeName)
+      const request = store.get(record.dataset.name)
+      request.onsuccess = () => {
+        const current = request.result as StoredDataset | undefined
+        // Evita guardar resultados de una carga anterior sobre un CSV reemplazado.
+        if (current && current.revision === record.revision && current.file.size === record.file.size && current.file.lastModified === record.file.lastModified && current.hasHeader === record.hasHeader) {
+          store.put({ ...current, proteins })
+        }
+      }
+      transaction.oncomplete = () => resolve()
+      transaction.onabort = () => reject(transaction.error ?? request.error)
+    })
+  } finally {
+    database.close()
+  }
 }
 
 export async function deleteStoredDataset(name: string): Promise<void> {

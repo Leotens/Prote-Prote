@@ -3,6 +3,7 @@ from base64 import b64encode
 from io import BytesIO
 from math import sqrt
 from collections import deque
+from heapq import heappop, heappush
 from typing import Annotated
 from time import perf_counter
 
@@ -20,6 +21,22 @@ PROTEIN_SELECTION_SCRIPT = """
     const node = nodes.get(event.nodes[0]);
     if (node && node.protein_details) {
       window.parent.postMessage({ type: 'prote-prote:protein-selected', details: node.protein_details }, '*');
+    }
+  });
+</script>
+"""
+
+GRAPH_CONTROLS_SCRIPT = """
+<script>
+  window.addEventListener('message', function (event) {
+    if (event.source !== window.parent || !event.data || event.data.type !== 'prote-prote:graph-control') return;
+    const action = event.data.action;
+    if (action === 'zoom-in') network.moveTo({scale: network.getScale() * 1.2});
+    else if (action === 'zoom-out') network.moveTo({scale: network.getScale() / 1.2});
+    else if (action === 'fit') network.fit();
+    else if (action === 'download') {
+      network.redraw();
+      window.parent.postMessage({type: 'prote-prote:graph-image', image: network.canvas.frame.canvas.toDataURL('image/png')}, '*');
     }
   });
 </script>
@@ -281,12 +298,13 @@ def generate_subgraph(
     return html
 
 
-def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str, details: dict | None = None) -> HTMLResponse:
+def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str, details: dict | None = None, highlights: dict[str, str] | None = None) -> HTMLResponse:
     net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
     net.set_options('{"physics":{"stabilization":{"iterations":100,"updateInterval":25}}}')
     for node in nodes:
         is_origin = node == origin
-        net.add_node(node, label=node, color="#1550bd" if is_origin else "#ff8539", title=f"Proteína de origen: {node}" if is_origin else node, size=32 if is_origin else 22, protein_details=details.get(node) if details else None)
+        color = (highlights or {}).get(node, "#1550bd" if is_origin else "#ff8539")
+        net.add_node(node, label=node, color=color, title=f"Proteína de origen: {node}" if is_origin else node, size=32 if is_origin or node in (highlights or {}) else 22, protein_details=details.get(node) if details else None)
     for source, target in edges:
         net.add_edge(source, target)
 
@@ -306,7 +324,7 @@ def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin:
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
-    return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + closing_tag + tail)
+    return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + GRAPH_CONTROLS_SCRIPT + closing_tag + tail)
 
 
 def shortest_path(proteins: dict[str, list[str]], selected: set[str], origin: str, destination: str) -> list[str]:
@@ -325,6 +343,136 @@ def shortest_path(proteins: dict[str, list[str]], selected: set[str], origin: st
                 parents[neighbor] = node
                 queue.append(neighbor)
     return []
+
+
+@app.post("/api/datasets/proteins")
+def list_proteins(file: UploadFile, has_header: Annotated[bool, Form()]):
+    proteins, _, _ = read_dataset(file, has_header)
+    return {"proteins": sorted(proteins)}
+
+
+def prim_mst(nodes: list[str], edges: list[tuple[str, str, int]], start: str) -> tuple[list[tuple[str, str]], int]:
+    # Adaptación del Ejercicio 3: lista de adyacencia, key, parent y min-heap.
+    # heapq reemplaza decreaseKey con nuevas entradas; se omiten las ya visitadas.
+    adjacency: dict[str, list[tuple[str, int]]] = {node: [] for node in nodes}
+    for source, target, weight in edges:
+        adjacency[source].append((target, weight))
+        adjacency[target].append((source, weight))
+
+    key = {node: float('inf') for node in nodes}
+    parent: dict[str, str | None] = {node: None for node in nodes}
+    order = {node: index for index, node in enumerate(nodes)}
+    key[start] = 0
+    heap = [(0, order[start], start)]
+    visited: set[str] = set()
+    tree = []
+    total_weight = 0
+    while heap:
+        weight, _, node = heappop(heap)
+        if node in visited:
+            continue
+        visited.add(node)
+        if parent[node] is not None:
+            tree.append((parent[node], node))
+            total_weight += weight
+        for neighbor, edge_weight in adjacency[node]:
+            if neighbor not in visited and edge_weight < key[neighbor]:
+                key[neighbor] = edge_weight
+                parent[neighbor] = node
+                heappush(heap, (edge_weight, order[neighbor], neighbor))
+
+    if len(visited) != len(nodes):
+        raise ValueError('Prim requiere un subgrafo conectado.')
+    return tree, total_weight
+
+
+def compare_proteins(proteins: dict[str, list[str]], protein_a: str, protein_b: str) -> dict:
+    protein_a, protein_b = protein_a.strip(), protein_b.strip()
+    if not protein_a or not protein_b:
+        raise HTTPException(status_code=422, detail="Ingresa las dos proteínas que deseas comparar.")
+    for protein_id in (protein_a, protein_b):
+        if protein_id not in proteins:
+            raise HTTPException(status_code=404, detail=f"No se encontró la proteína {protein_id} en el dataset.")
+    if protein_a == protein_b:
+        raise HTTPException(status_code=422, detail="Selecciona dos proteínas diferentes.")
+
+    components: dict[str, int] = {}
+    sizes: dict[int, int] = {}
+    for start in proteins:
+        if start in components:
+            continue
+        component_id = len(sizes) + 1
+        stack = [start]
+        components[start] = component_id
+        size = 0
+        while stack:
+            node = stack.pop()
+            size += 1
+            for neighbor in proteins[node]:
+                if neighbor not in components:
+                    components[neighbor] = component_id
+                    stack.append(neighbor)
+        sizes[component_id] = size
+
+    def details(node: str):
+        neighbors = proteins[node]
+        return {
+            "id": node,
+            "degree": len(neighbors) + (1 if node in neighbors else 0),
+            "neighbor_count": len(neighbors),
+            "component": components[node],
+            "component_size": sizes[components[node]],
+        }
+
+    neighbors_a, neighbors_b = set(proteins[protein_a]), set(proteins[protein_b])
+    centers = {protein_a, protein_b}
+    shared = sorted((neighbors_a & neighbors_b) - centers)
+    detail_a, detail_b = details(protein_a), details(protein_b)
+
+    def neighborhood(center: str) -> dict:
+        nodes = [center, *sorted(set(proteins[center]) - {center})]
+        selected = set(nodes)
+        edges = set()
+        for source in nodes:
+            for target in proteins[source]:
+                if target in selected:
+                    edges.add(tuple(sorted((source, target))))
+        # El dataset es no ponderado: todas las asociaciones tienen peso 1.
+        tree, total_weight = prim_mst(nodes, [(a, b, 1) for a, b in sorted(edges)], center)
+        return {
+            "nodes": nodes, "edges": tree, "original_edge_count": len(edges),
+            "mst_weight": total_weight, "edge_weight": 1,
+        }
+
+    return {
+        "protein_a": detail_a,
+        "protein_b": detail_b,
+        "shared_neighbors": shared,
+        "degree_difference": abs(detail_a["degree"] - detail_b["degree"]),
+        "same_component": components[protein_a] == components[protein_b],
+        "directly_connected": protein_b in neighbors_a,
+        "graph_a": neighborhood(protein_a),
+        "graph_b": neighborhood(protein_b),
+    }
+
+
+@app.post("/api/datasets/compare")
+def compare_dataset_proteins(
+    file: UploadFile,
+    has_header: Annotated[bool, Form()],
+    protein_a: Annotated[str, Form()],
+    protein_b: Annotated[str, Form()],
+):
+    proteins, _, _ = read_dataset(file, has_header)
+    result = compare_proteins(proteins, protein_a, protein_b)
+    for side in ("a", "b"):
+        graph = result[f"graph_{side}"]
+        center = result[f"protein_{side}"]["id"]
+        colors = {node: "#9be775" for node in result["shared_neighbors"]}
+        colors[center] = "#1550bd" if side == "a" else "#0bc5c7"
+        html = render_subgraph_html(graph["nodes"], graph["edges"], center, highlights=colors)
+        graph["html"] = html.body.decode("utf-8")
+    return result
 
 
 @app.post("/api/datasets/shortest-path")

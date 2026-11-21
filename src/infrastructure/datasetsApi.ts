@@ -14,6 +14,59 @@ export interface ProteinDetails {
     component_size: number
 }
 
+export interface ComparedProtein {
+    id: string
+    degree: number
+    neighbor_count: number
+    component: number
+    component_size: number
+}
+
+export interface ComparisonGraph {
+    nodes: string[]
+    edges: [string, string][]
+    html: string
+    original_edge_count: number
+    mst_weight: number
+    edge_weight: number
+}
+
+export interface ProteinComparison {
+    protein_a: ComparedProtein
+    protein_b: ComparedProtein
+    shared_neighbors: string[]
+    degree_difference: number
+    same_component: boolean
+    directly_connected: boolean
+    graph_a: ComparisonGraph
+    graph_b: ComparisonGraph
+}
+
+async function requestProteinAnalysis<T>(endpoint: string, file: File, hasHeader: boolean, signal: AbortSignal, fields: Record<string, string> = {}): Promise<T> {
+    const body = new FormData()
+    body.append('file', file)
+    body.append('has_header', String(hasHeader))
+    for (const [key, value] of Object.entries(fields)) body.append(key, value)
+    const response = await fetch(`/api/datasets/${endpoint}`, { method: 'POST', body, signal })
+    if (!response.ok) {
+        let message = `No se pudo consultar el dataset (HTTP ${response.status}).`
+        try {
+            const result = await response.json() as { detail?: unknown }
+            if (typeof result.detail === 'string') message = result.detail
+        } catch { /* Conserva el mensaje HTTP. */ }
+        throw new Error(message)
+    }
+    return response.json()
+}
+
+export function requestDatasetProteins(file: File, hasHeader: boolean, signal: AbortSignal) {
+    return requestProteinAnalysis<{ proteins: string[] }>('proteins', file, hasHeader, signal)
+}
+
+export function requestProteinComparison(file: File, hasHeader: boolean, proteinA: string, proteinB: string, signal: AbortSignal) {
+    return requestProteinAnalysis<ProteinComparison>('compare', file, hasHeader, signal, { protein_a: proteinA, protein_b: proteinB })
+}
+
 type GraphResponse = ({ html: string } | { image: Blob }) & { details?: ProteinDetails }
 
 export interface ShortestPathResult {

@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import BackToMenu from '../components/BackToMenu.vue'
+import ProteinSelector from '../components/ProteinSelector.vue'
+import ProteinComparisonGraph from '../components/ProteinComparisonGraph.vue'
 import { formatCount, type Dataset } from '../datasets'
+import { useProteinComparison } from '../composables/useProteinComparison'
 
 defineProps<{ datasets: readonly Dataset[] }>()
 const dataset = defineModel<Dataset>({ required: true })
@@ -11,6 +14,21 @@ const proteinB = ref('')
 const pickerOpen = ref(false)
 const pickerTrigger = ref<HTMLButtonElement | null>(null)
 const displayMode = ref<'summary' | 'subgraph'>('summary')
+const { proteins, result, loadingProteins, comparing, error, compare, loadProteins } = useProteinComparison(dataset)
+const cards = computed(() => [
+  { label: 'A', data: result.value?.protein_a },
+  { label: 'B', data: result.value?.protein_b },
+])
+
+watch(() => dataset.value.name, () => {
+  proteinA.value = ''
+  proteinB.value = ''
+  displayMode.value = 'summary'
+})
+
+async function requestComparison() {
+  if (await compare(proteinA.value, proteinB.value)) displayMode.value = 'subgraph'
+}
 
 function closePicker() {
   pickerOpen.value = false
@@ -33,24 +51,21 @@ function dismissPickerOnBlur(event: FocusEvent) {
     <BackToMenu @back="emit('back')" />
 
     <header class="compare-header">
-      <div class="comparison-inputs">
-        <label>
-          <span>Proteína A</span>
-          <input v-model.trim="proteinA" type="text" placeholder="Ejemplo: 7157" />
-        </label>
-        <label>
-          <span>Proteína B</span>
-          <input v-model.trim="proteinB" type="text" placeholder="Ejemplo: 4609" />
-        </label>
-        <button class="compare-button" type="button" disabled>Comparar</button>
-      </div>
+      <form class="comparison-inputs" @submit.prevent="requestComparison">
+        <ProteinSelector id="compare-protein-a" v-model="proteinA" label="Proteína A" :proteins="proteins" :disabled="loadingProteins || comparing" placeholder="Ejemplo: 7157" />
+        <ProteinSelector id="compare-protein-b" v-model="proteinB" label="Proteína B" :proteins="proteins" :disabled="loadingProteins || comparing" placeholder="Ejemplo: 4609" />
+        <button class="compare-button" type="submit" :disabled="loadingProteins || comparing || !proteins.length || !proteinA.trim() || !proteinB.trim()">{{ comparing ? 'Comparando…' : 'Comparar' }}</button>
+      </form>
+      <p v-if="loadingProteins" role="status">Cargando proteínas del dataset…</p>
+      <p v-if="error" role="alert">{{ error }} <button v-if="!proteins.length && !loadingProteins" type="button" class="retry-button" @click="loadProteins">Reintentar</button></p>
     </header>
 
     <div class="compare-grid">
       <aside class="protein-column">
-        <article v-for="protein in ['A', 'B']" :key="protein" class="glass-panel protein-card">
-          <h2>Proteína {{ protein }}</h2>
-          <div class="unselected">
+        <article v-for="protein in cards" :key="protein.label" class="glass-panel protein-card" :class="{ 'protein-card-selected': protein.data }">
+          <span v-if="protein.data" class="protein-id">Proteína {{ protein.label }} · ID: {{ protein.data.id }}</span>
+          <h2>Proteína {{ protein.data?.id ?? protein.label }}</h2>
+          <div v-if="!protein.data" class="unselected">
             <svg viewBox="0 0 64 64" aria-hidden="true">
               <path d="M18 17 31 30m5-5 9-13M32 36 19 49" />
               <circle cx="15" cy="14" r="6" /><circle cx="47" cy="9" r="6" />
@@ -59,10 +74,10 @@ function dismissPickerOnBlur(event: FocusEvent) {
             <span>Sin seleccionar</span>
           </div>
           <dl>
-            <div><dt>Grado</dt><dd>--</dd></div>
-            <div><dt>Vecinos</dt><dd>--</dd></div>
-            <div><dt>Componentes</dt><dd>--</dd></div>
-            <div><dt>Tamaño del componente</dt><dd>--</dd></div>
+            <div><dt>Grado</dt><dd>{{ protein.data ? formatCount(protein.data.degree) : '--' }}</dd></div>
+            <div><dt>Vecinos</dt><dd>{{ protein.data ? formatCount(protein.data.neighbor_count) : '--' }}</dd></div>
+            <div><dt>Componente</dt><dd>{{ protein.data ? `#${protein.data.component}` : '--' }}</dd></div>
+            <div><dt>Tamaño del componente</dt><dd>{{ protein.data ? formatCount(protein.data.component_size) : '--' }}</dd></div>
           </dl>
         </article>
       </aside>
@@ -99,8 +114,17 @@ function dismissPickerOnBlur(event: FocusEvent) {
           </div>
         </header>
 
-        <template v-if="displayMode === 'summary'">
-          <div class="empty-comparison">
+        <div v-show="displayMode === 'summary'" class="comparison-summary">
+          <div v-if="result" class="comparison-result">
+            <h1>{{ result.protein_a.id }} y {{ result.protein_b.id }}</h1>
+            <p>{{ result.directly_connected ? 'Tienen una asociación directa.' : 'No tienen una asociación directa.' }}</p>
+            <p>{{ result.same_component ? 'Pertenecen al mismo componente conectado.' : 'Pertenecen a componentes distintos: no existe un camino entre ellas.' }}</p>
+            <details v-if="result.shared_neighbors.length">
+              <summary>Ver {{ formatCount(result.shared_neighbors.length) }} vecinos compartidos</summary>
+              <p class="shared-list">{{ result.shared_neighbors.join(', ') }}</p>
+            </details>
+          </div>
+          <div v-else class="empty-comparison">
             <svg viewBox="0 0 64 64" aria-hidden="true">
               <path d="M18 17 31 30m5-5 9-13M32 36 19 49" />
               <circle cx="15" cy="14" r="6" /><circle cx="47" cy="9" r="6" />
@@ -111,50 +135,27 @@ function dismissPickerOnBlur(event: FocusEvent) {
           </div>
 
           <div class="summary-metrics" aria-label="Resumen de comparación">
-            <div><span>Vecinos compartidos</span><strong>--</strong></div>
-            <div><span>Diferencia de grado</span><strong>--</strong></div>
-            <div><span>Componente</span><strong>--</strong></div>
+            <div><span>Vecinos compartidos</span><strong>{{ result ? formatCount(result.shared_neighbors.length) : '--' }}</strong></div>
+            <div><span>Diferencia de grado</span><strong>{{ result ? formatCount(result.degree_difference) : '--' }}</strong></div>
+            <div><span>Componente</span><strong>{{ result ? result.same_component ? 'Mismo componente' : 'Distintos componentes' : '--' }}</strong></div>
           </div>
 
           <footer class="summary-footer">
-            <p>Las asociaciones requieren interpretación biológica adicional.</p>
-            <button type="button" @click="displayMode = 'subgraph'">
+            <button type="button" :disabled="!result || comparing" @click="displayMode = 'subgraph'">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="m8 11 8-4m-8 6 8 4"/></svg>
               Visualizar ambas en un subgrafo
             </button>
           </footer>
-        </template>
+        </div>
 
-        <template v-else>
-          <div class="subgraph-heading">
-            <div class="graph-toolbar" aria-label="Herramientas del subgrafo">
-              <button type="button" aria-label="Acercar" disabled>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7v7M7 10.5h7"/></svg>
-              </button>
-              <button type="button" aria-label="Alejar" disabled>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7 10.5h7"/></svg>
-              </button>
-              <span class="toolbar-divider"></span>
-              <button type="button" aria-label="Pantalla completa" disabled>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg>
-              </button>
-              <button type="button" aria-label="Descargar subgrafo" disabled>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
-              </button>
-            </div>
+          <div v-if="result" v-show="displayMode === 'subgraph'" class="comparison-graphs">
+            <ProteinComparisonGraph :graph="result.graph_a" :protein-id="result.protein_a.id" side="A" />
+            <ProteinComparisonGraph :graph="result.graph_b" :protein-id="result.protein_b.id" side="B" />
           </div>
 
-          <div class="empty-subgraph">
-            <img src="/images/mascot.png" alt="Mascota de Prote-Prote" />
-            <h2>Subgrafo sin datos</h2>
-            <p>Compara dos proteínas para visualizar aquí sus conexiones.</p>
-          </div>
-
-          <footer class="subgraph-footer">
-            <p>Las asociaciones requieren interpretación biológica adicional.</p>
+          <footer v-show="displayMode === 'subgraph'" class="subgraph-footer">
             <button type="button" @click="displayMode = 'summary'">Vista resumida</button>
           </footer>
-        </template>
       </section>
     </div>
   </section>
@@ -193,7 +194,20 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .protein-card dl { margin: 0; }
 .protein-card dl div { display: flex; justify-content: space-between; gap: 8px; padding: 6px 2px; border-bottom: 1px solid rgb(43 100 104 / 20%); font-size: 0.95rem; }
 .protein-card dd { margin: 0; color: #34535e; }
-.summary-panel { display: grid; min-height: 0; grid-template-rows: auto minmax(150px, 1fr) auto auto; padding: clamp(16px, 2vw, 28px); }
+.protein-card h2, .protein-card dd { overflow-wrap: anywhere; }
+.protein-card dd { text-align: right; }
+.protein-card-selected { display: flex; flex-direction: column; justify-content: center; gap: 12px; }
+.protein-id { align-self: flex-start; max-width: 100%; overflow-wrap: anywhere; padding: 4px 10px; border: 1px solid #d2f3f5; border-radius: 9px; background: #16566d66; color: white; font-size: 0.75rem; }
+.comparison-result { display: flex; min-width: 0; flex-direction: column; justify-content: center; padding: 20px 0; }
+.comparison-result h1 { margin: 0 0 12px; font-size: clamp(1.4rem, 2.4vw, 2.5rem); overflow-wrap: anywhere; }
+.comparison-result p { margin: 5px 0; }
+.comparison-result details { margin-top: 15px; }
+.comparison-result summary { cursor: pointer; }
+.shared-list { max-height: 140px; overflow-y: auto; overflow-wrap: anywhere; line-height: 1.5; }
+.retry-button { border: 1px solid #8aafbb; border-radius: 7px; padding: 4px 10px; background: #e4f7fb; color: inherit; cursor: pointer; font: inherit; }
+.summary-panel { display: flex; flex-direction: column; min-height: 0; padding: clamp(16px, 2vw, 28px); }
+.comparison-summary { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.comparison-summary > :is(.empty-comparison, .comparison-result) { flex: 1; min-height: 150px; }
 .empty-comparison { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .empty-comparison svg { width: clamp(62px, 7vw, 96px); }
 .empty-comparison h1 { margin: 8px 0; font-size: clamp(1.5rem, 2.4vw, 2.5rem); }
@@ -201,23 +215,17 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .summary-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(8px, 2vw, 32px); }
 .summary-metrics div { display: grid; min-height: 82px; place-items: center; gap: 4px; padding: 10px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 10px; background: rgb(236 247 248 / 32%); text-align: center; }
 .summary-metrics strong { font-size: 1.2rem; }
-.summary-footer { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-top: clamp(10px, 2dvh, 22px); }
-.summary-footer p { max-width: 420px; margin: 0; font-size: 0.9rem; }
+.summary-footer { display: flex; align-items: end; justify-content: flex-end; gap: 16px; margin-top: clamp(10px, 2dvh, 22px); }
 .summary-footer button { display: inline-flex; min-width: min(100%, 340px); align-items: center; justify-content: center; gap: 9px; padding: 8px 22px; }
 .summary-footer button svg { width: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.subgraph-panel { grid-template-rows: auto auto minmax(180px, 1fr) auto; }
-.subgraph-heading { display: flex; align-items: center; justify-content: flex-end; padding: 8px 0; }
-.graph-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 14px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }
-.graph-toolbar button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 8px; padding: 0; background: transparent; color: #154858; }
-.graph-toolbar button:disabled { cursor: not-allowed; opacity: 0.5; }
-.graph-toolbar svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.8; }
-.toolbar-divider { width: 1px; height: 24px; margin: 0 3px; background: #8aafbb; }
-.empty-subgraph { display: flex; min-height: 0; flex-direction: column; align-items: center; justify-content: center; padding: 12px; text-align: center; }
-.empty-subgraph img { width: clamp(80px, min(11vw, 18dvh), 145px); height: auto; margin-bottom: 12px; }
-.empty-subgraph h2 { margin: 0; font-size: clamp(1.25rem, 2vw, 2rem); }
-.empty-subgraph p { margin: 8px 0 0; color: #34535e; font-size: clamp(0.95rem, 1.2vw, 1.15rem); }
-.subgraph-footer { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-top: 10px; }
-.subgraph-footer p { max-width: 420px; margin: 0; font-size: 0.9rem; }
+.summary-panel.subgraph-panel { min-height: 480px; }
+.comparison-graphs { display: grid; flex: 1; min-width: 0; min-height: 380px; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(380px, 1fr); gap: 12px; }
+@media (max-width: 1000px) {
+  .comparison-graphs { grid-template-columns: 1fr; }
+  .summary-panel.subgraph-panel { min-height: 880px; }
+  .comparison-graphs { min-height: 772px; }
+}
+.subgraph-footer { display: flex; align-items: end; justify-content: flex-end; gap: 16px; margin-top: 10px; }
 .subgraph-footer button { min-width: min(100%, 240px); padding: 8px 22px; }
 
 @media (max-width: 760px) {
