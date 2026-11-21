@@ -43,6 +43,82 @@ GRAPH_CONTROLS_SCRIPT = """
 """
 
 
+class UnionFind:
+    """UFDS con compresión de caminos y unión por tamaño."""
+
+    def __init__(self, nodes):
+        self.parent = {node: node for node in nodes}
+        self.size = {node: 1 for node in nodes}
+
+    def find(self, node: str) -> str:
+        root = node
+        while root != self.parent[root]:
+            root = self.parent[root]
+        while node != root:
+            parent = self.parent[node]
+            self.parent[node] = root
+            node = parent
+        return root
+
+    def union(self, first: str, second: str) -> None:
+        root_a = self.find(first)
+        root_b = self.find(second)
+        if root_a == root_b:
+            return
+        if self.size[root_a] < self.size[root_b]:
+            root_a, root_b = root_b, root_a
+        self.parent[root_b] = root_a
+        self.size[root_a] += self.size[root_b]
+
+    def component_size(self, node: str) -> int:
+        return self.size[self.find(node)]
+
+
+def compare_proteins(
+    proteins: dict[str, list[str]],
+    edges: dict[tuple[str, str], None],
+    protein_a: str,
+    protein_b: str,
+) -> dict:
+    protein_a, protein_b = protein_a.strip(), protein_b.strip()
+    if not protein_a or not protein_b:
+        raise HTTPException(status_code=422, detail="Ingresa los identificadores de ambas proteínas.")
+    for protein_id in (protein_a, protein_b):
+        if protein_id not in proteins:
+            raise HTTPException(status_code=404, detail=f"No se encontró la proteína {protein_id} en el dataset.")
+
+    ufds = UnionFind(proteins)
+    for source, target in edges:
+        ufds.union(source, target)
+
+    neighbors_a = set(proteins[protein_a])
+    neighbors_b = set(proteins[protein_b])
+    shared_neighbors = sorted(neighbors_a & neighbors_b)
+    root_a = ufds.find(protein_a)
+    root_b = ufds.find(protein_b)
+
+    def details(protein_id: str, neighbors: set[str], root: str) -> dict:
+        return {
+            "id": protein_id,
+            "degree": len(neighbors) + (1 if protein_id in neighbors else 0),
+            "neighbors": sorted(neighbors),
+            "component_id": root,
+            "component_size": ufds.component_size(protein_id),
+        }
+
+    result_a = details(protein_a, neighbors_a, root_a)
+    result_b = details(protein_b, neighbors_b, root_b)
+    return {
+        "protein_a": result_a,
+        "protein_b": result_b,
+        "shared_neighbors": shared_neighbors,
+        "shared_neighbors_count": len(shared_neighbors),
+        "degree_difference": abs(result_a["degree"] - result_b["degree"]),
+        "directly_connected": protein_b in neighbors_a,
+        "same_component": root_a == root_b,
+    }
+
+
 def protein_details(proteins: dict[str, list[str]], nodes: list[str], component_size: int) -> dict:
     selected = set(nodes)
     details = {}
@@ -68,6 +144,20 @@ def recibir_dataset(file: UploadFile, has_header: Annotated[bool | None, Form()]
         "nodes": len(proteins),
         "edges": len(edges),
     }
+
+
+@app.post("/api/datasets/compare")
+def compare_dataset_proteins(
+    file: UploadFile,
+    has_header: Annotated[bool, Form()],
+    protein_a: Annotated[str, Form()],
+    protein_b: Annotated[str, Form()],
+):
+    proteins, edges, _ = read_dataset(file, has_header)
+    started = perf_counter()
+    result = compare_proteins(proteins, edges, protein_a, protein_b)
+    result["elapsed_ms"] = (perf_counter() - started) * 1000
+    return result
 
 
 def read_dataset(file: UploadFile, has_header: bool | None):

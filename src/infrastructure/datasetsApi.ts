@@ -77,6 +77,50 @@ export interface ShortestPathResult {
     image_base64?: string
 }
 
+export interface ComparedProtein {
+    id: string
+    degree: number
+    neighbors: string[]
+    component_id: string
+    component_size: number
+}
+
+export interface ProteinComparisonResult {
+    protein_a: ComparedProtein
+    protein_b: ComparedProtein
+    shared_neighbors: string[]
+    shared_neighbors_count: number
+    degree_difference: number
+    directly_connected: boolean
+    same_component: boolean
+    elapsed_ms: number
+}
+
+export async function requestProteinComparison(
+    file: File,
+    hasHeader: boolean,
+    proteinA: string,
+    proteinB: string,
+    signal: AbortSignal,
+): Promise<ProteinComparisonResult> {
+    const body = new FormData()
+    body.append('file', file)
+    body.append('has_header', String(hasHeader))
+    body.append('protein_a', proteinA)
+    body.append('protein_b', proteinB)
+
+    const response = await fetch('/api/datasets/compare', { method: 'POST', body, signal })
+    if (!response.ok) {
+        let message = `No se pudieron comparar las proteínas (HTTP ${response.status}).`
+        try {
+            const result = await response.json() as { detail?: string }
+            if (typeof result.detail === 'string') message = result.detail
+        } catch { /* Conserva el mensaje HTTP si la respuesta no es JSON. */ }
+        throw new Error(message)
+    }
+    return response.json()
+}
+
 export async function requestDatasetShortestPath(
     file: File,
     hasHeader: boolean,
