@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import BackToMenu from '../components/BackToMenu.vue'
 import { useProteinComparison } from '../composables/useProteinComparison'
 import { formatCount, type Dataset } from '../datasets'
+import type { ProteinDetails } from '../infrastructure/datasetsApi'
 
 defineProps<{ datasets: readonly Dataset[] }>()
 const dataset = defineModel<Dataset>({ required: true })
@@ -12,7 +13,10 @@ const proteinB = ref('')
 const pickerOpen = ref(false)
 const pickerTrigger = ref<HTMLButtonElement | null>(null)
 const subgraphPanel = ref<HTMLElement | null>(null)
+const comparisonGraphFrame = ref<HTMLIFrameElement | null>(null)
 const isFullscreen = ref(false)
+const comparisonGraphReady = ref(false)
+const selectedComparisonProtein = ref<ProteinDetails | null>(null)
 const displayMode = ref<'summary' | 'subgraph'>('summary')
 const {
   comparisonResult,
@@ -66,12 +70,20 @@ function requestComparison() {
 async function requestComparisonSubgraph() {
   if (!comparisonResult.value) return
   displayMode.value = 'subgraph'
+  comparisonGraphReady.value = false
+  selectedComparisonProtein.value = null
   await generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value)
 }
 
 function changeComparisonGraphMode(mode: 'comparison' | 'expanded') {
   if (mode === comparisonGraphMode.value || generatingComparisonSubgraph.value) return
+  comparisonGraphReady.value = false
+  selectedComparisonProtein.value = null
   void generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value, mode)
+}
+
+function controlComparisonGraph(action: 'zoom-in' | 'zoom-out' | 'fit') {
+  comparisonGraphFrame.value?.contentWindow?.postMessage({ type: 'prote-prote:graph-control', action }, '*')
 }
 
 function requestComparisonDownload() {
@@ -90,8 +102,23 @@ function syncFullscreenState() {
   isFullscreen.value = document.fullscreenElement === subgraphPanel.value
 }
 
-onMounted(() => document.addEventListener('fullscreenchange', syncFullscreenState))
-onBeforeUnmount(() => document.removeEventListener('fullscreenchange', syncFullscreenState))
+function handleComparisonGraphMessage(event: MessageEvent) {
+  if (event.source !== comparisonGraphFrame.value?.contentWindow) return
+  if (event.data === 'prote-prote:comparison-graph-ready') {
+    comparisonGraphReady.value = true
+  } else if (event.data?.type === 'prote-prote:protein-selected') {
+    selectedComparisonProtein.value = event.data.details as ProteinDetails
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('fullscreenchange', syncFullscreenState)
+  window.addEventListener('message', handleComparisonGraphMessage)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', syncFullscreenState)
+  window.removeEventListener('message', handleComparisonGraphMessage)
+})
 
 function dismissPickerOnBlur(event: FocusEvent) {
   const selector = event.currentTarget as HTMLElement
@@ -146,7 +173,14 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </article>
       </aside>
 
-      <section ref="subgraphPanel" class="glass-panel summary-panel" :class="{ 'subgraph-panel': displayMode === 'subgraph' }">
+      <section
+        ref="subgraphPanel"
+        class="glass-panel summary-panel"
+        :class="{
+          'subgraph-panel': displayMode === 'subgraph',
+          'empty-summary-panel': displayMode === 'summary' && !comparisonResult,
+        }"
+      >
         <header class="dataset-info">
           <div class="dataset-selector" @keydown.esc="pickerOpen && closePicker()" @focusout="dismissPickerOnBlur">
             <button
@@ -262,10 +296,10 @@ function dismissPickerOnBlur(event: FocusEvent) {
               </div>
             </div>
             <div class="graph-toolbar" aria-label="Herramientas del subgrafo">
-              <button type="button" aria-label="Acercar" disabled>
+              <button type="button" aria-label="Acercar" :disabled="!comparisonGraphReady" @click="controlComparisonGraph('zoom-in')">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7v7M7 10.5h7"/></svg>
               </button>
-              <button type="button" aria-label="Alejar" disabled>
+              <button type="button" aria-label="Alejar" :disabled="!comparisonGraphReady" @click="controlComparisonGraph('zoom-out')">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7 10.5h7"/></svg>
               </button>
               <span class="toolbar-divider"></span>
@@ -301,12 +335,18 @@ function dismissPickerOnBlur(event: FocusEvent) {
             <h2>No se pudo generar el subgrafo</h2>
             <p>{{ comparisonSubgraphError }}</p>
           </div>
-          <iframe
-            v-else-if="comparisonSubgraphHtml"
-            class="comparison-graph-frame"
-            title="Subgrafo conjunto de las proteínas comparadas"
-            :srcdoc="comparisonSubgraphHtml"
-          ></iframe>
+          <div v-else-if="comparisonSubgraphHtml" class="comparison-graph-area">
+            <iframe
+              ref="comparisonGraphFrame"
+              class="comparison-graph-frame"
+              title="Subgrafo conjunto de las proteínas comparadas"
+              :srcdoc="comparisonSubgraphHtml"
+            ></iframe>
+            <div v-if="!comparisonGraphReady" class="graph-loading-overlay" role="status">
+              <span class="loading-spinner" aria-hidden="true"></span>
+              Estabilizando el grafo…
+            </div>
+          </div>
           <div v-else class="empty-subgraph">
             <img src="/images/mascot.png" alt="Mascota de Prote-Prote" />
             <h2>Subgrafo sin datos</h2>
@@ -325,6 +365,17 @@ function dismissPickerOnBlur(event: FocusEvent) {
             <span><i class="legend-line"></i>Asociación directa</span>
           </div>
 
+          <aside v-if="selectedComparisonProtein" class="selected-node-details" aria-live="polite">
+            <div>
+              <strong>Proteína {{ selectedComparisonProtein.id }}</strong>
+              <span>Grado: {{ selectedComparisonProtein.degree }}</span>
+              <span>Vecinos: {{ selectedComparisonProtein.neighbors.length }}</span>
+              <span>Componente: {{ selectedComparisonProtein.component }}</span>
+              <span>Tamaño: {{ selectedComparisonProtein.component_size }}</span>
+            </div>
+            <button type="button" aria-label="Cerrar detalles" @click="selectedComparisonProtein = null">×</button>
+          </aside>
+
           <footer class="subgraph-footer">
             <p>Las asociaciones requieren interpretación biológica adicional.</p>
             <button type="button" @click="displayMode = 'summary'">Vista resumida</button>
@@ -336,10 +387,10 @@ function dismissPickerOnBlur(event: FocusEvent) {
 </template>
 
 <style scoped>
-.compare { display: flex; flex: 1; min-height: 0; flex-direction: column; padding: clamp(8px, 1.5dvh, 16px) 4px 0; color: #12333f; }
+.compare { display: flex; flex: 1; min-height: 0; flex-direction: column; padding: clamp(4px, 0.8dvh, 10px) 4px 0; color: #12333f; }
 .compare :is(button, input):focus-visible { outline: 2px solid #08485d; outline-offset: 3px; }
 .compare > .back-button { margin-bottom: 2px; }
-.compare-header { display: grid; gap: clamp(8px, 1.4dvh, 14px); margin-bottom: clamp(10px, 1.5dvh, 18px); }
+.compare-header { display: grid; gap: 6px; margin-bottom: clamp(6px, 1dvh, 10px); }
 .dataset-info { display: flex; width: fit-content; max-width: 100%; flex-direction: column; align-items: flex-start; gap: 0; padding-bottom: 5px; font-size: 0.88rem; line-height: 1.15; }
 .dataset-counts { display: flex; flex-wrap: wrap; gap: 1px 10px; color: #34535e; font-size: 0.78rem; }
 .dataset-selector { position: relative; }
@@ -352,30 +403,31 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .dataset-picker button[aria-pressed='true'] { background: linear-gradient(#28758b, #134a61); color: white; }
 .dataset-tray-enter-active, .dataset-tray-leave-active { transition: opacity 160ms ease, transform 160ms ease; }
 .dataset-tray-enter-from, .dataset-tray-leave-to { opacity: 0; transform: translateY(-6px); }
-.comparison-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(140px, 0.52fr); align-items: end; gap: clamp(10px, 2vw, 38px); padding: 0 10px; }
-.comparison-inputs label { display: grid; gap: 5px; font-size: 0.9rem; font-weight: 700; text-transform: uppercase; }
-.comparison-inputs input { width: 100%; min-height: 42px; border: 1px solid #8aafbb; border-radius: 10px; padding: 8px 12px; background: #f5fcff; color: inherit; font: inherit; font-size: 1rem; }
+.comparison-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(130px, 0.48fr); align-items: end; gap: clamp(8px, 1.5vw, 24px); padding: 0 8px; }
+.comparison-inputs label { display: grid; gap: 3px; font-size: 0.78rem; font-weight: 700; text-transform: uppercase; }
+.comparison-inputs input { width: 100%; min-height: 34px; border: 1px solid #8aafbb; border-radius: 9px; padding: 5px 10px; background: #f5fcff; color: inherit; font: inherit; font-size: 0.92rem; }
 .comparison-inputs input::placeholder { color: #6a858e; }
 .comparison-error { margin: 0 10px; color: #792434; font-weight: 700; text-align: center; }
-.compare-button, .summary-footer button, .subgraph-footer button { min-height: 42px; border: 1px solid rgb(255 255 255 / 35%); border-radius: 999px; background: linear-gradient(#22c0d3, #1550bd); box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%), 0 4px 10px rgb(12 76 103 / 20%); color: white; cursor: pointer; font: inherit; font-size: 1rem; font-weight: 700; }
+.compare-button, .summary-footer button, .subgraph-footer button { min-height: 36px; border: 1px solid rgb(255 255 255 / 35%); border-radius: 999px; background: linear-gradient(#22c0d3, #1550bd); box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%), 0 4px 10px rgb(12 76 103 / 20%); color: white; cursor: pointer; font: inherit; font-size: 0.92rem; font-weight: 700; }
 .compare-button:disabled, .summary-footer button:disabled { cursor: not-allowed; opacity: 0.78; }
 .summary-footer button:hover, .subgraph-footer button:hover { filter: brightness(1.06); }
-.compare-grid { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(220px, 0.7fr) minmax(0, 2.3fr); gap: clamp(10px, 1.6vw, 24px); }
-.protein-column { display: grid; min-height: 0; grid-template-rows: 1fr 1fr; gap: clamp(10px, 1.5dvh, 18px); }
-.protein-card { padding: clamp(12px, 1.5vw, 22px); }
-.protein-card h2 { margin: 0 0 6px; font-size: clamp(1.2rem, 1.6vw, 1.7rem); }
+.compare-grid { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(230px, 0.66fr) minmax(0, 3fr); gap: clamp(8px, 1vw, 16px); }
+.protein-column { display: grid; min-height: 0; grid-template-rows: 1fr 1fr; gap: clamp(8px, 1dvh, 12px); }
+.protein-card { padding: clamp(9px, 1vw, 14px); }
+.protein-card h2 { margin: 0 0 3px; font-size: clamp(1.05rem, 1.3vw, 1.35rem); }
 .protein-id { display: inline-block; margin-bottom: 5px; padding: 3px 9px; border: 1px solid rgb(255 255 255 / 65%); border-radius: 999px; background: rgb(22 86 109 / 48%); color: white; font-size: 0.72rem; }
-.unselected { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 4px; color: #34535e; }
+.unselected { display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 2px; color: #34535e; }
 .unselected svg, .empty-comparison svg { width: 48px; fill: white; stroke: white; stroke-linecap: round; stroke-width: 4; }
 .protein-card dl { margin: 0; }
-.protein-card dl div { display: flex; justify-content: space-between; gap: 8px; padding: 6px 2px; border-bottom: 1px solid rgb(43 100 104 / 20%); font-size: 0.95rem; }
+.protein-card dl div { display: flex; justify-content: space-between; gap: 6px; padding: 4px 1px; border-bottom: 1px solid rgb(43 100 104 / 20%); font-size: 0.82rem; }
 .protein-card dd { margin: 0; color: #34535e; }
-.selected-protein { margin: 8px 0; color: #16566d; font-weight: 700; text-align: center; }
-.summary-panel { display: grid; min-height: 0; grid-template-rows: auto auto auto minmax(150px, 1fr) auto; padding: clamp(16px, 2vw, 28px); }
+.selected-protein { margin: 3px 0; color: #16566d; font-size: 0.82rem; font-weight: 700; text-align: center; }
+.summary-panel { display: grid; min-height: 0; grid-template-rows: auto auto auto minmax(150px, 1fr) auto; padding: clamp(10px, 1.2vw, 18px); }
+.empty-summary-panel { grid-template-rows: auto minmax(130px, 1fr) auto auto; }
 .empty-comparison { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
-.empty-comparison svg { width: clamp(62px, 7vw, 96px); }
-.empty-comparison h1 { margin: 8px 0; font-size: clamp(1.5rem, 2.4vw, 2.5rem); }
-.empty-comparison p { max-width: 700px; margin: 0; font-size: clamp(0.95rem, 1.3vw, 1.25rem); line-height: 1.4; }
+.empty-comparison svg { width: clamp(52px, 5vw, 74px); }
+.empty-comparison h1 { margin: 6px 0; font-size: clamp(1.3rem, 1.8vw, 1.8rem); }
+.empty-comparison p { max-width: 600px; margin: 0; font-size: clamp(0.85rem, 1vw, 1rem); line-height: 1.35; }
 .comparison-result { display: flex; min-height: 0; flex-direction: column; align-items: center; justify-content: center; padding: 4px 12px 12px; text-align: center; }
 .comparison-result h1 { margin: 0 0 8px; font-size: clamp(1.5rem, 2.4vw, 2.5rem); }
 .component-banner { display: flex; width: min(100%, 620px); align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid rgb(255 255 255 / 55%); border-radius: 9px; background: rgb(174 244 226 / 56%); color: #166053; text-align: left; }
@@ -386,6 +438,11 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .summary-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(8px, 2vw, 32px); }
 .summary-metrics div { display: grid; min-height: 82px; place-items: center; gap: 4px; padding: 10px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 10px; background: rgb(236 247 248 / 32%); text-align: center; }
 .summary-metrics strong { font-size: 1.2rem; }
+.empty-summary-panel .summary-metrics { width: min(100%, 940px); justify-self: center; gap: clamp(8px, 1.3vw, 20px); }
+.empty-summary-panel .summary-metrics div { min-height: 62px; padding: 7px 10px; font-size: 0.82rem; }
+.empty-summary-panel .summary-metrics strong { font-size: 1rem; }
+.empty-summary-panel .summary-footer { margin-top: clamp(12px, 2dvh, 20px); }
+.empty-summary-panel .summary-footer button { min-width: min(100%, 300px); padding: 6px 18px; }
 .venn-section { display: flex; min-height: 180px; flex-direction: column; }
 .venn-title { margin: 8px 0 0; font-size: 0.82rem; font-weight: 700; text-transform: uppercase; }
 .venn-diagram { position: relative; width: 260px; height: 145px; margin: 0 auto; }
@@ -401,8 +458,8 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .summary-footer p { max-width: 420px; margin: 0; font-size: 0.9rem; }
 .summary-footer button { display: inline-flex; min-width: min(100%, 340px); align-items: center; justify-content: center; gap: 9px; padding: 8px 22px; }
 .summary-footer button svg { width: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.subgraph-panel { grid-template-rows: auto auto minmax(0, 1fr) auto auto; overflow: hidden; }
-.subgraph-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.subgraph-panel { position: relative; grid-template-rows: auto auto minmax(0, 1fr) auto auto auto; overflow: hidden; }
+.subgraph-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0 5px; }
 .subgraph-heading p { margin: 0 0 5px; color: #34535e; font-size: 0.9rem; }
 .comparison-view-switch { display: flex; gap: 4px; }
 .comparison-view-switch button { border: 1px solid #8aafbb; border-radius: 999px; padding: 5px 10px; background: rgb(237 250 255 / 60%); color: #164c5c; cursor: pointer; font: inherit; font-size: 0.78rem; }
@@ -418,7 +475,11 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .empty-subgraph h2 { margin: 0; font-size: clamp(1.25rem, 2vw, 2rem); }
 .empty-subgraph p { margin: 8px 0 0; color: #34535e; font-size: clamp(0.95rem, 1.2vw, 1.15rem); }
 .comparison-graph-frame { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: transparent; }
-.graph-legend { display: flex; width: 100%; align-self: end; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px 16px; margin-top: clamp(18px, 3dvh, 32px); padding: 8px 12px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 12px; background: rgb(237 250 255 / 35%); color: #164c5c; font-size: 0.78rem; }
+.comparison-graph-area { position: relative; min-width: 0; min-height: 0; }
+.graph-loading-overlay { position: absolute; z-index: 2; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgb(181 229 237 / 82%); color: #164c5c; font-weight: 700; }
+.loading-spinner { width: 24px; height: 24px; border: 3px solid rgb(22 76 92 / 20%); border-top-color: #16566d; border-radius: 50%; animation: comparison-spin 700ms linear infinite; }
+@keyframes comparison-spin { to { transform: rotate(360deg); } }
+.graph-legend { display: flex; width: 100%; align-self: end; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px 14px; margin-top: clamp(8px, 1.2dvh, 14px); padding: 6px 10px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 12px; background: rgb(237 250 255 / 35%); color: #164c5c; font-size: 0.75rem; }
 .graph-legend strong { margin-right: 2px; }
 .graph-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .legend-dot { display: inline-block; width: 12px; height: 12px; border: 1px solid rgb(255 255 255 / 85%); border-radius: 50%; box-shadow: 0 0 0 1px rgb(22 76 92 / 18%); }
@@ -428,8 +489,13 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .shared-expanded-color { background: #7a68cf; }
 .exclusive-color { background: #83cfee; }
 .legend-line { display: inline-block; width: 22px; height: 4px; border-radius: 999px; background: #ff941f; }
+.selected-node-details { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-top: 8px; padding: 9px 12px; border: 1px solid rgb(255 255 255 / 55%); border-radius: 12px; background: rgb(237 250 255 / 60%); color: #164c5c; }
+.selected-node-details > div { display: flex; flex-wrap: wrap; gap: 5px 16px; align-items: center; }
+.selected-node-details strong { color: #12333f; }
+.selected-node-details span { font-size: 0.82rem; }
+.selected-node-details button { width: 26px; height: 26px; flex: none; border: 0; border-radius: 50%; background: rgb(22 86 109 / 14%); color: #164c5c; cursor: pointer; font-size: 1.2rem; line-height: 1; }
 .summary-panel:fullscreen { width: 100vw; height: 100vh; border-radius: 0; background: linear-gradient(155deg, #c6edf3, #9fd9e4); }
-.subgraph-footer { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-top: clamp(12px, 2dvh, 20px); }
+.subgraph-footer { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-top: clamp(7px, 1dvh, 11px); }
 .subgraph-footer p { max-width: 420px; margin: 0; font-size: 0.9rem; }
 .subgraph-footer button { min-width: min(100%, 240px); padding: 8px 22px; }
 
@@ -439,6 +505,9 @@ function dismissPickerOnBlur(event: FocusEvent) {
   .compare-grid { grid-template-columns: 1fr; overflow: visible; }
   .protein-column { grid-template-columns: 1fr 1fr; grid-template-rows: none; }
   .summary-panel { min-height: 430px; }
+  .subgraph-heading { align-items: stretch; flex-direction: column; }
+  .graph-toolbar { align-self: flex-end; }
+  .graph-legend { gap: 6px 10px; font-size: 0.72rem; }
 }
 
 @media (max-width: 520px) {
@@ -447,5 +516,8 @@ function dismissPickerOnBlur(event: FocusEvent) {
   .summary-footer button { min-width: 0; width: 100%; }
   .subgraph-footer { align-items: stretch; flex-direction: column; }
   .subgraph-footer button { width: 100%; }
+  .comparison-view-switch { flex-wrap: wrap; }
+  .graph-toolbar { align-self: center; }
+  .selected-node-details > div { display: grid; grid-template-columns: 1fr 1fr; }
 }
 </style>

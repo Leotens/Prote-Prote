@@ -2,7 +2,7 @@ import unittest
 from base64 import b64decode
 from io import BytesIO
 
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 
 from main import generate_comparison_subgraph, multi_source_neighborhood
 
@@ -33,6 +33,9 @@ class ComparisonSubgraphTests(unittest.TestCase):
     def test_interactive_endpoint_returns_pyvis_html(self):
         result = generate_comparison_subgraph(self.dataset(), False, "A", "B", 1, 20, True)
         self.assertIn("prote-prote:comparison-graph-ready", result["html"])
+        self.assertIn("prote-prote:protein-selected", result["html"])
+        self.assertIn("prote-prote:graph-control", result["html"])
+        self.assertIn('"protein_details"', result["html"])
         self.assertIn('Prote\\u00edna A: A', result["html"])
         self.assertIn('Vecino compartido: C', result["html"])
         self.assertGreaterEqual(result["node_count"], 2)
@@ -45,6 +48,11 @@ class ComparisonSubgraphTests(unittest.TestCase):
     def test_image_endpoint_returns_png(self):
         result = generate_comparison_subgraph(self.dataset(), False, "A", "B", 1, 20, False)
         self.assertTrue(b64decode(result["image_base64"]).startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_invalid_view_mode_is_rejected(self):
+        with self.assertRaises(HTTPException) as error:
+            generate_comparison_subgraph(self.dataset(), False, "A", "B", 1, 20, True, "unknown")
+        self.assertEqual(error.exception.status_code, 422)
 
 
 if __name__ == "__main__":

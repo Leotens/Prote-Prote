@@ -26,21 +26,23 @@ PROTEIN_SELECTION_SCRIPT = """
 </script>
 """
 
-GRAPH_CONTROLS_SCRIPT = """
+GRAPH_CONTROL_SCRIPT = """
 <script>
   window.addEventListener('message', function (event) {
     if (event.source !== window.parent || !event.data || event.data.type !== 'prote-prote:graph-control') return;
-    const action = event.data.action;
-    if (action === 'zoom-in') network.moveTo({scale: network.getScale() * 1.2});
-    else if (action === 'zoom-out') network.moveTo({scale: network.getScale() / 1.2});
-    else if (action === 'fit') network.fit();
-    else if (action === 'download') {
+    const scale = network.getScale();
+    if (event.data.action === 'zoom-in') network.moveTo({ scale: Math.min(scale * 1.25, 5), animation: true });
+    if (event.data.action === 'zoom-out') network.moveTo({ scale: Math.max(scale / 1.25, 0.1), animation: true });
+    if (event.data.action === 'fit') network.fit({ animation: true });
+    if (event.data.action === 'download') {
       network.redraw();
-      window.parent.postMessage({type: 'prote-prote:graph-image', image: network.canvas.frame.canvas.toDataURL('image/png')}, '*');
+      window.parent.postMessage({ type: 'prote-prote:graph-image', image: network.canvas.frame.canvas.toDataURL('image/png') }, '*');
     }
   });
 </script>
 """
+
+GRAPH_CONTROLS_SCRIPT = GRAPH_CONTROL_SCRIPT
 
 
 class UnionFind:
@@ -117,6 +119,27 @@ def compare_proteins(
         "directly_connected": protein_b in neighbors_a,
         "same_component": root_a == root_b,
     }
+
+
+def comparison_node_details(
+    proteins: dict[str, list[str]],
+    edges: dict[tuple[str, str], None],
+    nodes: set[str],
+) -> dict[str, dict]:
+    ufds = UnionFind(proteins)
+    for source, target in edges:
+        ufds.union(source, target)
+    details = {}
+    for node in nodes:
+        neighbors = sorted(set(proteins[node]))
+        details[node] = {
+            "id": node,
+            "degree": len(neighbors) + (1 if node in neighbors else 0),
+            "neighbors": neighbors,
+            "component": ufds.find(node),
+            "component_size": ufds.component_size(node),
+        }
+    return details
 
 
 def protein_details(proteins: dict[str, list[str]], nodes: list[str], component_size: int) -> dict:
@@ -455,6 +478,7 @@ def render_expanded_comparison_html(
     protein_a: str,
     protein_b: str,
     shared_neighbors: set[str],
+    details: dict[str, dict],
 ) -> HTMLResponse:
     net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
     net.set_options('{"physics":{"stabilization":{"iterations":100,"updateInterval":25}}}')
@@ -467,7 +491,7 @@ def render_expanded_comparison_html(
             color, size, title = "#7a68cf", 25, f"Vecino compartido: {node}"
         else:
             color, size, title = "#8ecdd8", 19, node
-        net.add_node(node, label=node, color=color, size=size, title=title)
+        net.add_node(node, label=node, color=color, size=size, title=title, protein_details=details[node])
     for source, target in edges:
         net.add_edge(source, target)
 
@@ -481,13 +505,24 @@ def render_expanded_comparison_html(
     html = net.generate_html().replace("</head>", styles + "</head>", 1)
     ready_script = """
     <script>
-      function notifyGraphReady() { window.parent.postMessage('prote-prote:comparison-graph-ready', '*'); }
-      if (nodes.length <= 1) { notifyGraphReady(); }
-      else { network.once('stabilizationIterationsDone', notifyGraphReady); }
+      let graphReadyNotified = false;
+      function notifyGraphReady() {
+        if (graphReadyNotified) return;
+        graphReadyNotified = true;
+        network.fit({ animation: false });
+        window.parent.postMessage('prote-prote:comparison-graph-ready', '*');
+      }
+      if (nodes.length <= 1) {
+        window.requestAnimationFrame(notifyGraphReady);
+      } else {
+        network.once('stabilizationIterationsDone', notifyGraphReady);
+        network.once('stabilized', notifyGraphReady);
+        window.setTimeout(notifyGraphReady, 8000);
+      }
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
-    return HTMLResponse(document + ready_script + closing_tag + tail)
+    return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + GRAPH_CONTROL_SCRIPT + closing_tag + tail)
 
 
 def build_comparison_layout(
@@ -519,15 +554,16 @@ def render_structured_comparison_html(
     proteins: dict[str, list[str]],
     protein_a: str,
     protein_b: str,
+    details: dict[str, dict],
 ) -> HTMLResponse:
     layout = build_comparison_layout(proteins, protein_a, protein_b)
     net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
     net.set_options('{"physics":{"enabled":false},"interaction":{"hover":true,"navigationButtons":false}}')
 
     net.add_node(protein_a, label=protein_a, color="#ff941f", size=42, x=-380, y=0,
-                 fixed={"x": True, "y": True}, title=f"Proteína A: {protein_a}")
+                 fixed={"x": True, "y": True}, title=f"Proteína A: {protein_a}", protein_details=details[protein_a])
     net.add_node(protein_b, label=protein_b, color="#20c9c3", size=42, x=380, y=0,
-                 fixed={"x": True, "y": True}, title=f"Proteína B: {protein_b}")
+                 fixed={"x": True, "y": True}, title=f"Proteína B: {protein_b}", protein_details=details[protein_b])
 
     visible_a = layout["visible_a"]
     visible_b = layout["visible_b"]
@@ -536,18 +572,18 @@ def render_structured_comparison_html(
         angle = 2.0 + (2.25 * index / max(1, len(visible_a) - 1))
         x, y = -380 + 190 * cos(angle), 190 * sin(angle)
         net.add_node(node, label=node, color="#83cfee", size=20, x=x, y=y,
-                     fixed={"x": True, "y": True}, title=f"Vecino exclusivo de A: {node}")
+                     fixed={"x": True, "y": True}, title=f"Vecino exclusivo de A: {node}", protein_details=details[node])
         net.add_edge(protein_a, node, color="#176978", width=1.4)
     for index, node in enumerate(visible_b):
         angle = -1.12 + (2.24 * index / max(1, len(visible_b) - 1))
         x, y = 380 + 190 * cos(angle), 190 * sin(angle)
         net.add_node(node, label=node, color="#83cfee", size=20, x=x, y=y,
-                     fixed={"x": True, "y": True}, title=f"Vecino exclusivo de B: {node}")
+                     fixed={"x": True, "y": True}, title=f"Vecino exclusivo de B: {node}", protein_details=details[node])
         net.add_edge(protein_b, node, color="#176978", width=1.4)
     for index, node in enumerate(visible_shared):
         y = -150 + (300 * index / max(1, len(visible_shared) - 1))
         net.add_node(node, label=node, color="#78dc68", size=23, x=0, y=y,
-                     fixed={"x": True, "y": True}, title=f"Vecino compartido: {node}")
+                     fixed={"x": True, "y": True}, title=f"Vecino compartido: {node}", protein_details=details[node])
         net.add_edge(protein_a, node, color="#176978", width=1.8)
         net.add_edge(protein_b, node, color="#176978", width=1.8)
 
@@ -575,14 +611,16 @@ def render_structured_comparison_html(
     html = net.generate_html().replace("</head>", styles + "</head>", 1)
     ready_script = """
     <script>
-      network.once('afterDrawing', function () {
+      window.requestAnimationFrame(function () {
         network.fit({ animation: false });
-        window.parent.postMessage('prote-prote:comparison-graph-ready', '*');
+        window.requestAnimationFrame(function () {
+          window.parent.postMessage('prote-prote:comparison-graph-ready', '*');
+        });
       });
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
-    return HTMLResponse(document + ready_script + closing_tag + tail)
+    return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + GRAPH_CONTROL_SCRIPT + closing_tag + tail)
 
 
 def render_comparison_image(
@@ -699,6 +737,15 @@ def generate_comparison_subgraph(
     visible_edges = [(source, target) for source, target in edges if source in selected and target in selected]
     shared = set(comparison["shared_neighbors"])
     if view_mode == "comparison":
+        layout = build_comparison_layout(proteins, protein_a, protein_b)
+        detail_nodes = {
+            protein_a, protein_b,
+            *layout["visible_a"], *layout["visible_b"], *layout["visible_shared"],
+        }
+    else:
+        detail_nodes = selected
+    details = comparison_node_details(proteins, edges, detail_nodes)
+    if view_mode == "comparison":
         unique_neighbors = set(proteins[protein_a]) | set(proteins[protein_b]) | {protein_a, protein_b}
         result = {
             "node_count": len(unique_neighbors),
@@ -707,7 +754,7 @@ def generate_comparison_subgraph(
     else:
         result = {"node_count": len(nodes), "edge_count": len(visible_edges)}
     if interactive:
-        renderer = render_structured_comparison_html(proteins, protein_a, protein_b) if view_mode == "comparison" else render_expanded_comparison_html(nodes, visible_edges, protein_a, protein_b, shared)
+        renderer = render_structured_comparison_html(proteins, protein_a, protein_b, details) if view_mode == "comparison" else render_expanded_comparison_html(nodes, visible_edges, protein_a, protein_b, shared, details)
         result["html"] = renderer.body.decode("utf-8")
     else:
         image = render_structured_comparison_image(proteins, protein_a, protein_b) if view_mode == "comparison" else render_comparison_image(nodes, visible_edges, protein_a, protein_b, shared)
