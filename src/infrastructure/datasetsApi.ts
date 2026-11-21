@@ -6,7 +6,15 @@ interface UploadResult {
     edges: number
 }
 
-type GraphResponse = { html: string } | { image: Blob }
+export interface ProteinDetails {
+    id: string
+    degree: number
+    neighbors: string[]
+    component: string
+    component_size: number
+}
+
+type GraphResponse = ({ html: string } | { image: Blob }) & { details?: ProteinDetails }
 
 export interface ShortestPathResult {
     path: string[]
@@ -79,6 +87,7 @@ export async function requestDatasetSubgraph(
     body.append('has_header', String(hasHeader))
     body.append('protein_id', proteinId)
     body.append('distance', String(distance))
+    body.append('include_details', 'true')
     body.append('node_limit', String(nodeLimit))
     body.append('interactive', String(interactive))
 
@@ -103,7 +112,10 @@ export async function requestDatasetSubgraph(
             }
             throw new Error(message)
         }
-        return interactive ? { html: await response.text() } : { image: await response.blob() }
+        const result = await response.json() as { details: ProteinDetails, html: string, image_base64: string }
+        if (interactive) return { html: result.html, details: result.details }
+        const bytes = Uint8Array.from(atob(result.image_base64), character => character.charCodeAt(0))
+        return { image: new Blob([bytes], { type: 'image/png' }), details: result.details }
     } catch (error) {
         if (timedOut && !signal.aborted) {
             throw new Error('La generación del subgrafo tardó más de 60 segundos. Prueba con una distancia menor o desactiva el modo interactivo.')

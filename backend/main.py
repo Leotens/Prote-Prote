@@ -14,6 +14,32 @@ from pyvis.network import Network
 
 app = FastAPI(title="Prote-Prote API")
 
+PROTEIN_SELECTION_SCRIPT = """
+<script>
+  network.on('selectNode', function (event) {
+    const node = nodes.get(event.nodes[0]);
+    if (node && node.protein_details) {
+      window.parent.postMessage({ type: 'prote-prote:protein-selected', details: node.protein_details }, '*');
+    }
+  });
+</script>
+"""
+
+
+def protein_details(proteins: dict[str, list[str]], nodes: list[str], component_size: int) -> dict:
+    selected = set(nodes)
+    details = {}
+    for node in nodes:
+        neighbors = [neighbor for neighbor in proteins[node] if neighbor in selected]
+        details[node] = {
+            "id": node,
+            "degree": len(neighbors) + (1 if node in neighbors else 0),
+            "neighbors": neighbors,
+            "component": "Principal",
+            "component_size": component_size,
+        }
+    return details
+
 
 @app.post("/api/datasets")
 def recibir_dataset(file: UploadFile, has_header: Annotated[bool | None, Form()] = None):
@@ -153,9 +179,10 @@ def generate_graph(
         bgcolor="transparent",
     )
 
+    details = protein_details(proteins, nodes, len(component))
     for protein_id in nodes:
         net.add_node(protein_id, label=protein_id,
-                     color="#ff8539", title=protein_id)
+                     color="#ff8539", title=protein_id, protein_details=details[protein_id])
 
     for source, target in visible_edges:
         net.add_edge(source, target)
@@ -197,7 +224,7 @@ def generate_graph(
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
-    html = document + ready_script + closing_tag + tail
+    html = document + ready_script + PROTEIN_SELECTION_SCRIPT + closing_tag + tail
     return HTMLResponse(html)
 
 
@@ -209,6 +236,7 @@ def generate_subgraph(
     distance: Annotated[int, Form(ge=1, le=3)],
     node_limit: Annotated[int, Form(ge=1, le=1500)],
     interactive: Annotated[bool, Form()] = True,
+    include_details: Annotated[bool, Form()] = False,
 ):
     proteins, edges, _ = read_dataset(file, has_header)
     protein_id = protein_id.strip()
@@ -240,18 +268,25 @@ def generate_subgraph(
     nodes = list(distances)
     selected = set(nodes)
     visible_edges = [(source, target) for source, target in edges if source in selected and target in selected]
+    details = protein_details(proteins, graph_nodes, len(component))
     if not interactive:
-        return render_graph_image(nodes, visible_edges)
+        image = render_graph_image(nodes, visible_edges)
+        if include_details:
+            return {"details": details[protein_id], "image_base64": b64encode(image.body).decode("ascii")}
+        return image
 
-    return render_subgraph_html(nodes, visible_edges, protein_id)
+    html = render_subgraph_html(nodes, visible_edges, protein_id, details)
+    if include_details:
+        return {"details": details[protein_id], "html": html.body.decode("utf-8")}
+    return html
 
 
-def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str) -> HTMLResponse:
+def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str, details: dict | None = None) -> HTMLResponse:
     net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
     net.set_options('{"physics":{"stabilization":{"iterations":100,"updateInterval":25}}}')
     for node in nodes:
         is_origin = node == origin
-        net.add_node(node, label=node, color="#1550bd" if is_origin else "#ff8539", title=f"Proteína de origen: {node}" if is_origin else node, size=32 if is_origin else 22)
+        net.add_node(node, label=node, color="#1550bd" if is_origin else "#ff8539", title=f"Proteína de origen: {node}" if is_origin else node, size=32 if is_origin else 22, protein_details=details.get(node) if details else None)
     for source, target in edges:
         net.add_edge(source, target)
 
@@ -271,7 +306,7 @@ def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin:
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
-    return HTMLResponse(document + ready_script + closing_tag + tail)
+    return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + closing_tag + tail)
 
 
 def shortest_path(proteins: dict[str, list[str]], selected: set[str], origin: str, destination: str) -> list[str]:

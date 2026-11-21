@@ -1,6 +1,6 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import type { Dataset } from '../datasets'
-import { requestDatasetGraph, requestDatasetShortestPath, requestDatasetSubgraph, type ShortestPathResult } from '../infrastructure/datasetsApi'
+import { requestDatasetGraph, requestDatasetShortestPath, requestDatasetSubgraph, type ProteinDetails, type ShortestPathResult } from '../infrastructure/datasetsApi'
 import { getStoredDataset } from '../infrastructure/datasetsStorage'
 
 export function useDatasetGraph() {
@@ -20,6 +20,9 @@ export function useDatasetGraph() {
   const pathStatus = ref('Sin consulta')
   const displayedPath = ref<string[]>([])
   const subgraphKind = ref<'neighborhood' | 'shortest-path'>('neighborhood')
+  const fullProteinDetails = ref<ProteinDetails | null>(null)
+  const subgraphProteinDetails = ref<ProteinDetails | null>(null)
+  const selectedProtein = computed(() => activeGraph.value === 'full' ? fullProteinDetails.value : subgraphProteinDetails.value)
   let pendingGraph: AbortController | undefined
 
   function clearGraph() {
@@ -30,6 +33,8 @@ export function useDatasetGraph() {
     pathStatus.value = 'Sin consulta'
     displayedPath.value = []
     subgraphKind.value = 'neighborhood'
+    fullProteinDetails.value = null
+    subgraphProteinDetails.value = null
     if (fullGraphImageUrl.value) URL.revokeObjectURL(fullGraphImageUrl.value)
     if (subgraphImageUrl.value) URL.revokeObjectURL(subgraphImageUrl.value)
     fullGraphImageUrl.value = ''
@@ -114,6 +119,7 @@ export function useDatasetGraph() {
       if ('html' in result) subgraphHtml.value = result.html
       else subgraphImageUrl.value = URL.createObjectURL(result.image)
       subgraphKind.value = 'neighborhood'
+      subgraphProteinDetails.value = result.details ?? null
       activeGraph.value = 'subgraph'
       return true
     } catch (error) {
@@ -154,6 +160,7 @@ export function useDatasetGraph() {
       subgraphImageUrl.value = result.image_base64 ? `data:image/png;base64,${result.image_base64}` : ''
       displayedPath.value = result.path
       subgraphKind.value = 'shortest-path'
+      subgraphProteinDetails.value = null
       activeGraph.value = 'subgraph'
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -215,6 +222,9 @@ export function useDatasetGraph() {
 
   return {
     graphHtml,
+    selectedProtein,
+    fullProteinDetails,
+    subgraphProteinDetails,
     pathResult,
     pathStatus,
     subgraphKind,

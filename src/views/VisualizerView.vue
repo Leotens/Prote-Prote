@@ -17,6 +17,9 @@ const pickerTrigger = ref<HTMLButtonElement | null>(null)
 
 const {
   graphHtml,
+  selectedProtein,
+  fullProteinDetails,
+  subgraphProteinDetails,
   pathResult,
   pathStatus,
   subgraphKind,
@@ -81,6 +84,17 @@ watch(subgraphHtml, (html, _, onCleanup) => {
 })
 
 function onViewerMessage(event: MessageEvent) {
+  const fromFull = event.source === graphFrame.value?.contentWindow
+  const fromSubgraph = event.source === subgraphFrame.value?.contentWindow
+  if (!fromFull && !fromSubgraph) return
+  if (event.data?.type === 'prote-prote:protein-selected') {
+    if (generatingGraph.value || (activeGraph.value === 'full' ? !fromFull : !fromSubgraph)) return
+    const details = event.data.details
+    if (!details || typeof details.id !== 'string' || typeof details.degree !== 'number' || !Array.isArray(details.neighbors) || !details.neighbors.every((id: unknown) => typeof id === 'string') || typeof details.component !== 'string' || typeof details.component_size !== 'number') return
+    if (fromFull) fullProteinDetails.value = details
+    else subgraphProteinDetails.value = details
+    return
+  }
   if (event.data !== 'prote-prote:graph-ready') return
   if (event.source === graphFrame.value?.contentWindow) {
     fullViewerReady.value = true
@@ -300,7 +314,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </header>
 
         <div v-if="hasSubgraph" class="graph-view-switch" aria-label="Vista del grafo">
-          <button type="button" :disabled="generatingGraph" :aria-pressed="activeGraph === 'full'" @click="showGraph('full')">Volver al grafo original</button>
+          <button type="button" :disabled="generatingGraph" :aria-pressed="activeGraph === 'full'" @click="showGraph('full')">Grafo original</button>
           <button type="button" :disabled="generatingGraph" :aria-pressed="activeGraph === 'subgraph'" @click="showGraph('subgraph')">{{ subgraphKind === 'shortest-path' ? 'Camino más corto' : 'Subgrafo' }}</button>
         </div>
 
@@ -361,13 +375,13 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
       <aside v-if="mode === 'neighborhood'" class="glass-panel details-panel">
         <h2>Detalles de la proteína</h2>
-        <p class="details-intro">Selecciona un nodo del grafo para ver sus detalles.</p>
+        <p class="details-intro">{{ selectedProtein ? 'Grado y vecinos dentro del grafo generado. El componente corresponde al dataset completo.' : 'Genera un entorno o selecciona un nodo del grafo para ver sus detalles.' }}</p>
         <dl class="protein-details">
-          <div><dt>ID</dt><dd>--</dd></div>
-          <div><dt>Grado</dt><dd>--</dd></div>
-          <div><dt>Vecinos</dt><dd>--</dd></div>
-          <div><dt>Componente conectado</dt><dd>--</dd></div>
-          <div><dt>Tamaño conectado</dt><dd>--</dd></div>
+          <div><dt>ID</dt><dd>{{ selectedProtein?.id ?? '--' }}</dd></div>
+          <div><dt>Grado</dt><dd>{{ selectedProtein?.degree ?? '--' }}</dd></div>
+          <div><dt>Vecinos</dt><dd class="protein-neighbors">{{ selectedProtein ? selectedProtein.neighbors.join(', ') || 'Sin vecinos' : '--' }}</dd></div>
+          <div><dt>Componente conectado</dt><dd>{{ selectedProtein?.component ?? '--' }}</dd></div>
+          <div><dt>Tamaño conectado</dt><dd>{{ selectedProtein ? formatCount(selectedProtein.component_size) : '--' }}</dd></div>
         </dl>
       </aside>
       <aside v-else class="glass-panel details-panel">
@@ -650,6 +664,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .protein-details dt, .protein-details dd { margin: 0; }
 .protein-details dd { color: #34535e; }
 .protein-details dd { text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.protein-neighbors { max-height: 160px; overflow-y: auto; }
 .path-hint { font-size: 0.8rem; }
 .path-route { overflow-wrap: anywhere; line-height: 1.5; max-height: 180px; overflow-y: auto; }
 
