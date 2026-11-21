@@ -14,7 +14,7 @@ export interface ProteinDetails {
     component_size: number
 }
 
-export interface ComparedProtein {
+export interface ComparedProteinMst {
     id: string
     degree: number
     neighbor_count: number
@@ -31,9 +31,9 @@ export interface ComparisonGraph {
     edge_weight: number
 }
 
-export interface ProteinComparison {
-    protein_a: ComparedProtein
-    protein_b: ComparedProtein
+export interface ProteinComparisonMst {
+    protein_a: ComparedProteinMst
+    protein_b: ComparedProteinMst
     shared_neighbors: string[]
     degree_difference: number
     same_component: boolean
@@ -63,8 +63,8 @@ export function requestDatasetProteins(file: File, hasHeader: boolean, signal: A
     return requestProteinAnalysis<{ proteins: string[] }>('proteins', file, hasHeader, signal)
 }
 
-export function requestProteinComparison(file: File, hasHeader: boolean, proteinA: string, proteinB: string, signal: AbortSignal) {
-    return requestProteinAnalysis<ProteinComparison>('compare', file, hasHeader, signal, { protein_a: proteinA, protein_b: proteinB })
+export function requestProteinMstComparison(file: File, hasHeader: boolean, proteinA: string, proteinB: string, signal: AbortSignal) {
+    return requestProteinAnalysis<ProteinComparisonMst>('compare-mst', file, hasHeader, signal, { protein_a: proteinA, protein_b: proteinB })
 }
 
 type GraphResponse = ({ html: string } | { image: Blob }) & { details?: ProteinDetails }

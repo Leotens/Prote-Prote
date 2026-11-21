@@ -76,7 +76,7 @@ class UnionFind:
         return self.size[self.find(node)]
 
 
-def compare_proteins(
+def compare_proteins_ufds(
     proteins: dict[str, list[str]],
     edges: dict[tuple[str, str], None],
     protein_a: str,
@@ -178,7 +178,18 @@ def compare_dataset_proteins(
 ):
     proteins, edges, _ = read_dataset(file, has_header)
     started = perf_counter()
-    result = compare_proteins(proteins, edges, protein_a, protein_b)
+    ufds_result = compare_proteins_ufds(proteins, edges, protein_a, protein_b)
+    result = compare_proteins_mst(proteins, protein_a, protein_b)
+    result["shared_neighbors_count"] = len(result["shared_neighbors"])
+    for side in ("a", "b"):
+        result[f"protein_{side}"]["neighbors"] = ufds_result[f"protein_{side}"]["neighbors"]
+        result[f"protein_{side}"]["component_id"] = ufds_result[f"protein_{side}"]["component_id"]
+        graph = result[f"graph_{side}"]
+        center = result[f"protein_{side}"]["id"]
+        colors = {node: "#9be775" for node in result["shared_neighbors"]}
+        colors[center] = "#1550bd" if side == "a" else "#0bc5c7"
+        html = render_subgraph_html(graph["nodes"], graph["edges"], center, highlights=colors)
+        graph["html"] = html.body.decode("utf-8")
     result["elapsed_ms"] = (perf_counter() - started) * 1000
     return result
 
@@ -821,7 +832,7 @@ def prim_mst(nodes: list[str], edges: list[tuple[str, str, int]], start: str) ->
     return tree, total_weight
 
 
-def compare_proteins(proteins: dict[str, list[str]], protein_a: str, protein_b: str) -> dict:
+def compare_proteins_mst(proteins: dict[str, list[str]], protein_a: str, protein_b: str) -> dict:
     protein_a, protein_b = protein_a.strip(), protein_b.strip()
     if not protein_a or not protein_b:
         raise HTTPException(status_code=422, detail="Ingresa las dos proteínas que deseas comparar.")
@@ -891,15 +902,27 @@ def compare_proteins(proteins: dict[str, list[str]], protein_a: str, protein_b: 
     }
 
 
-@app.post("/api/datasets/compare")
-def compare_dataset_proteins(
+def compare_proteins(
+    proteins: dict[str, list[str]],
+    edges_or_protein_a,
+    protein_a_or_b: str,
+    protein_b: str | None = None,
+) -> dict:
+    """Compatibilidad entre la comparación UFDS nueva y la comparación MST existente."""
+    if protein_b is None:
+        return compare_proteins_mst(proteins, edges_or_protein_a, protein_a_or_b)
+    return compare_proteins_ufds(proteins, edges_or_protein_a, protein_a_or_b, protein_b)
+
+
+@app.post("/api/datasets/compare-mst")
+def compare_dataset_proteins_mst(
     file: UploadFile,
     has_header: Annotated[bool, Form()],
     protein_a: Annotated[str, Form()],
     protein_b: Annotated[str, Form()],
 ):
     proteins, _, _ = read_dataset(file, has_header)
-    result = compare_proteins(proteins, protein_a, protein_b)
+    result = compare_proteins_mst(proteins, protein_a, protein_b)
     for side in ("a", "b"):
         graph = result[f"graph_{side}"]
         center = result[f"protein_{side}"]["id"]
