@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import BackToMenu from '../components/BackToMenu.vue'
 import { useProteinComparison } from '../composables/useProteinComparison'
 import { formatCount, type Dataset } from '../datasets'
@@ -11,8 +11,24 @@ const proteinA = ref('')
 const proteinB = ref('')
 const pickerOpen = ref(false)
 const pickerTrigger = ref<HTMLButtonElement | null>(null)
+const subgraphPanel = ref<HTMLElement | null>(null)
+const isFullscreen = ref(false)
 const displayMode = ref<'summary' | 'subgraph'>('summary')
-const { comparisonResult, comparisonError, comparing, compare, clearComparison } = useProteinComparison()
+const {
+  comparisonResult,
+  comparisonError,
+  comparing,
+  comparisonSubgraphHtml,
+  comparisonSubgraphError,
+  comparisonSubgraphCounts,
+  comparisonGraphMode,
+  generatingComparisonSubgraph,
+  downloadingComparisonSubgraph,
+  compare,
+  generateComparisonSubgraph,
+  downloadComparisonSubgraph,
+  clearComparison,
+} = useProteinComparison()
 const proteinCards = computed(() => [
   { label: 'A', details: comparisonResult.value?.protein_a },
   { label: 'B', details: comparisonResult.value?.protein_b },
@@ -46,6 +62,36 @@ function requestComparison() {
   displayMode.value = 'summary'
   void compare(dataset.value, proteinA.value, proteinB.value)
 }
+
+async function requestComparisonSubgraph() {
+  if (!comparisonResult.value) return
+  displayMode.value = 'subgraph'
+  await generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value)
+}
+
+function changeComparisonGraphMode(mode: 'comparison' | 'expanded') {
+  if (mode === comparisonGraphMode.value || generatingComparisonSubgraph.value) return
+  void generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value, mode)
+}
+
+function requestComparisonDownload() {
+  void downloadComparisonSubgraph(dataset.value, proteinA.value, proteinB.value)
+}
+
+function requestFullscreen() {
+  if (document.fullscreenElement) {
+    void document.exitFullscreen()
+  } else {
+    void subgraphPanel.value?.requestFullscreen()
+  }
+}
+
+function syncFullscreenState() {
+  isFullscreen.value = document.fullscreenElement === subgraphPanel.value
+}
+
+onMounted(() => document.addEventListener('fullscreenchange', syncFullscreenState))
+onBeforeUnmount(() => document.removeEventListener('fullscreenchange', syncFullscreenState))
 
 function dismissPickerOnBlur(event: FocusEvent) {
   const selector = event.currentTarget as HTMLElement
@@ -100,7 +146,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </article>
       </aside>
 
-      <section class="glass-panel summary-panel" :class="{ 'subgraph-panel': displayMode === 'subgraph' }">
+      <section ref="subgraphPanel" class="glass-panel summary-panel" :class="{ 'subgraph-panel': displayMode === 'subgraph' }">
         <header class="dataset-info">
           <div class="dataset-selector" @keydown.esc="pickerOpen && closePicker()" @focusout="dismissPickerOnBlur">
             <button
@@ -187,7 +233,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
           <footer class="summary-footer">
             <p>Las asociaciones requieren interpretación biológica adicional.</p>
-            <button type="button" :disabled="!comparisonResult" @click="displayMode = 'subgraph'">
+            <button type="button" :disabled="!comparisonResult || generatingComparisonSubgraph" @click="requestComparisonSubgraph">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="m8 11 8-4m-8 6 8 4"/></svg>
               Visualizar ambas en un subgrafo
             </button>
@@ -196,6 +242,25 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
         <template v-else>
           <div class="subgraph-heading">
+            <div>
+              <p v-if="comparisonSubgraphCounts">
+                {{ comparisonSubgraphCounts.nodes }} proteínas · {{ comparisonSubgraphCounts.edges }} asociaciones
+              </p>
+              <div class="comparison-view-switch" aria-label="Tipo de visualización">
+                <button
+                  type="button"
+                  :aria-pressed="comparisonGraphMode === 'comparison'"
+                  :disabled="generatingComparisonSubgraph"
+                  @click="changeComparisonGraphMode('comparison')"
+                >Vista comparativa</button>
+                <button
+                  type="button"
+                  :aria-pressed="comparisonGraphMode === 'expanded'"
+                  :disabled="generatingComparisonSubgraph"
+                  @click="changeComparisonGraphMode('expanded')"
+                >Red expandida</button>
+              </div>
+            </div>
             <div class="graph-toolbar" aria-label="Herramientas del subgrafo">
               <button type="button" aria-label="Acercar" disabled>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7v7M7 10.5h7"/></svg>
@@ -204,19 +269,60 @@ function dismissPickerOnBlur(event: FocusEvent) {
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7 10.5h7"/></svg>
               </button>
               <span class="toolbar-divider"></span>
-              <button type="button" aria-label="Pantalla completa" disabled>
+              <button
+                type="button"
+                :aria-label="isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'"
+                :title="isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'"
+                :aria-pressed="isFullscreen"
+                :disabled="!comparisonSubgraphHtml"
+                @click="requestFullscreen"
+              >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg>
               </button>
-              <button type="button" aria-label="Descargar subgrafo" disabled>
+              <button
+                type="button"
+                aria-label="Descargar subgrafo"
+                :title="downloadingComparisonSubgraph ? 'Preparando imagen PNG…' : 'Descargar subgrafo como PNG'"
+                :disabled="!comparisonSubgraphHtml || downloadingComparisonSubgraph"
+                @click="requestComparisonDownload"
+              >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
               </button>
             </div>
           </div>
 
-          <div class="empty-subgraph">
+          <div v-if="generatingComparisonSubgraph" class="empty-subgraph" role="status">
+            <img src="/images/mascot.png" alt="Mascota de Prote-Prote" />
+            <h2>Generando subgrafo conjunto…</h2>
+            <p>BFS multiorigen está explorando el entorno de ambas proteínas.</p>
+          </div>
+          <div v-else-if="comparisonSubgraphError" class="empty-subgraph" role="alert">
+            <img src="/images/mascot.png" alt="Mascota de Prote-Prote" />
+            <h2>No se pudo generar el subgrafo</h2>
+            <p>{{ comparisonSubgraphError }}</p>
+          </div>
+          <iframe
+            v-else-if="comparisonSubgraphHtml"
+            class="comparison-graph-frame"
+            title="Subgrafo conjunto de las proteínas comparadas"
+            :srcdoc="comparisonSubgraphHtml"
+          ></iframe>
+          <div v-else class="empty-subgraph">
             <img src="/images/mascot.png" alt="Mascota de Prote-Prote" />
             <h2>Subgrafo sin datos</h2>
             <p>Compara dos proteínas para visualizar aquí sus conexiones.</p>
+          </div>
+
+          <div v-if="comparisonSubgraphHtml" class="graph-legend" aria-label="Leyenda de colores del grafo">
+            <strong>Leyenda</strong>
+            <span><i class="legend-dot protein-a-color"></i>Proteína A</span>
+            <span><i class="legend-dot protein-b-color"></i>Proteína B</span>
+            <span>
+              <i class="legend-dot" :class="comparisonGraphMode === 'comparison' ? 'shared-comparison-color' : 'shared-expanded-color'"></i>
+              Vecino compartido
+            </span>
+            <span><i class="legend-dot exclusive-color"></i>Vecino exclusivo</span>
+            <span><i class="legend-line"></i>Asociación directa</span>
           </div>
 
           <footer class="subgraph-footer">
@@ -295,8 +401,13 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .summary-footer p { max-width: 420px; margin: 0; font-size: 0.9rem; }
 .summary-footer button { display: inline-flex; min-width: min(100%, 340px); align-items: center; justify-content: center; gap: 9px; padding: 8px 22px; }
 .summary-footer button svg { width: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.subgraph-panel { grid-template-rows: auto auto minmax(180px, 1fr) auto; }
-.subgraph-heading { display: flex; align-items: center; justify-content: flex-end; padding: 8px 0; }
+.subgraph-panel { grid-template-rows: auto auto minmax(0, 1fr) auto auto; overflow: hidden; }
+.subgraph-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.subgraph-heading p { margin: 0 0 5px; color: #34535e; font-size: 0.9rem; }
+.comparison-view-switch { display: flex; gap: 4px; }
+.comparison-view-switch button { border: 1px solid #8aafbb; border-radius: 999px; padding: 5px 10px; background: rgb(237 250 255 / 60%); color: #164c5c; cursor: pointer; font: inherit; font-size: 0.78rem; }
+.comparison-view-switch button[aria-pressed='true'] { background: linear-gradient(#28758b, #134a61); color: white; }
+.comparison-view-switch button:disabled { cursor: wait; opacity: 0.65; }
 .graph-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 14px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }
 .graph-toolbar button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 8px; padding: 0; background: transparent; color: #154858; }
 .graph-toolbar button:disabled { cursor: not-allowed; opacity: 0.5; }
@@ -306,7 +417,19 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .empty-subgraph img { width: clamp(80px, min(11vw, 18dvh), 145px); height: auto; margin-bottom: 12px; }
 .empty-subgraph h2 { margin: 0; font-size: clamp(1.25rem, 2vw, 2rem); }
 .empty-subgraph p { margin: 8px 0 0; color: #34535e; font-size: clamp(0.95rem, 1.2vw, 1.15rem); }
-.subgraph-footer { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-top: 10px; }
+.comparison-graph-frame { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: transparent; }
+.graph-legend { display: flex; width: 100%; align-self: end; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px 16px; margin-top: clamp(18px, 3dvh, 32px); padding: 8px 12px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 12px; background: rgb(237 250 255 / 35%); color: #164c5c; font-size: 0.78rem; }
+.graph-legend strong { margin-right: 2px; }
+.graph-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.legend-dot { display: inline-block; width: 12px; height: 12px; border: 1px solid rgb(255 255 255 / 85%); border-radius: 50%; box-shadow: 0 0 0 1px rgb(22 76 92 / 18%); }
+.protein-a-color { background: #ff941f; }
+.protein-b-color { background: #20c9c3; }
+.shared-comparison-color { background: #78dc68; }
+.shared-expanded-color { background: #7a68cf; }
+.exclusive-color { background: #83cfee; }
+.legend-line { display: inline-block; width: 22px; height: 4px; border-radius: 999px; background: #ff941f; }
+.summary-panel:fullscreen { width: 100vw; height: 100vh; border-radius: 0; background: linear-gradient(155deg, #c6edf3, #9fd9e4); }
+.subgraph-footer { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-top: clamp(12px, 2dvh, 20px); }
 .subgraph-footer p { max-width: 420px; margin: 0; font-size: 0.9rem; }
 .subgraph-footer button { min-width: min(100%, 240px); padding: 8px 22px; }
 

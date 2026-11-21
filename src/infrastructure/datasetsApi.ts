@@ -96,6 +96,46 @@ export interface ProteinComparisonResult {
     elapsed_ms: number
 }
 
+export interface ComparisonSubgraphResult {
+    node_count: number
+    edge_count: number
+    html?: string
+    image_base64?: string
+}
+
+export async function requestComparisonSubgraph(
+    file: File,
+    hasHeader: boolean,
+    proteinA: string,
+    proteinB: string,
+    distance: number,
+    nodeLimit: number,
+    interactive: boolean,
+    viewMode: 'comparison' | 'expanded',
+    signal: AbortSignal,
+): Promise<ComparisonSubgraphResult> {
+    const body = new FormData()
+    body.append('file', file)
+    body.append('has_header', String(hasHeader))
+    body.append('protein_a', proteinA)
+    body.append('protein_b', proteinB)
+    body.append('distance', String(distance))
+    body.append('node_limit', String(nodeLimit))
+    body.append('interactive', String(interactive))
+    body.append('view_mode', viewMode)
+
+    const response = await fetch('/api/datasets/compare-subgraph', { method: 'POST', body, signal })
+    if (!response.ok) {
+        let message = `No se pudo generar el subgrafo conjunto (HTTP ${response.status}).`
+        try {
+            const result = await response.json() as { detail?: string }
+            if (typeof result.detail === 'string') message = result.detail
+        } catch { /* Conserva el mensaje HTTP si la respuesta no es JSON. */ }
+        throw new Error(message)
+    }
+    return response.json()
+}
+
 export async function requestProteinComparison(
     file: File,
     hasHeader: boolean,

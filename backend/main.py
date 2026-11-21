@@ -1,7 +1,7 @@
 import csv
 from base64 import b64encode
 from io import BytesIO
-from math import sqrt
+from math import cos, sin, sqrt
 from collections import deque
 from heapq import heappop, heappush
 from typing import Annotated
@@ -415,6 +415,304 @@ def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin:
     """
     document, closing_tag, tail = html.rpartition("</body>")
     return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + GRAPH_CONTROLS_SCRIPT + closing_tag + tail)
+
+
+def multi_source_neighborhood(
+    proteins: dict[str, list[str]],
+    origins: tuple[str, str],
+    distance: int,
+    node_limit: int,
+) -> list[str]:
+    """BFS multiorigen con expansión intercalada para representar ambos entornos."""
+    nodes = list(dict.fromkeys(origins))
+    selected = set(nodes)
+    frontier = nodes[:]
+
+    for _ in range(distance):
+        if not frontier or len(nodes) >= node_limit:
+            break
+        iterators = deque(iter(proteins[node]) for node in frontier)
+        next_frontier = []
+        while iterators and len(nodes) < node_limit:
+            neighbors = iterators.popleft()
+            try:
+                neighbor = next(neighbors)
+            except StopIteration:
+                continue
+            iterators.append(neighbors)
+            if neighbor in selected:
+                continue
+            selected.add(neighbor)
+            nodes.append(neighbor)
+            next_frontier.append(neighbor)
+        frontier = next_frontier
+    return nodes
+
+
+def render_expanded_comparison_html(
+    nodes: list[str],
+    edges: list[tuple[str, str]],
+    protein_a: str,
+    protein_b: str,
+    shared_neighbors: set[str],
+) -> HTMLResponse:
+    net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
+    net.set_options('{"physics":{"stabilization":{"iterations":100,"updateInterval":25}}}')
+    for node in nodes:
+        if node == protein_a:
+            color, size, title = "#ff8539", 34, f"Proteína A: {node}"
+        elif node == protein_b:
+            color, size, title = "#22bfc7", 34, f"Proteína B: {node}"
+        elif node in shared_neighbors:
+            color, size, title = "#7a68cf", 25, f"Vecino compartido: {node}"
+        else:
+            color, size, title = "#8ecdd8", 19, node
+        net.add_node(node, label=node, color=color, size=size, title=title)
+    for source, target in edges:
+        net.add_edge(source, target)
+
+    styles = """
+    <style>
+      html, body { margin: 0; overflow: hidden; background: transparent; }
+      body > .card, #mynetwork { background: transparent; border: 0; padding: 0; }
+      #loadingBar { display: none !important; }
+    </style>
+    """
+    html = net.generate_html().replace("</head>", styles + "</head>", 1)
+    ready_script = """
+    <script>
+      function notifyGraphReady() { window.parent.postMessage('prote-prote:comparison-graph-ready', '*'); }
+      if (nodes.length <= 1) { notifyGraphReady(); }
+      else { network.once('stabilizationIterationsDone', notifyGraphReady); }
+    </script>
+    """
+    document, closing_tag, tail = html.rpartition("</body>")
+    return HTMLResponse(document + ready_script + closing_tag + tail)
+
+
+def build_comparison_layout(
+    proteins: dict[str, list[str]],
+    protein_a: str,
+    protein_b: str,
+    max_exclusive: int = 12,
+    max_shared: int = 5,
+):
+    neighbors_a = set(proteins[protein_a])
+    neighbors_b = set(proteins[protein_b])
+    shared = sorted(neighbors_a & neighbors_b)
+    exclusive_a = sorted(neighbors_a - neighbors_b - {protein_b})
+    exclusive_b = sorted(neighbors_b - neighbors_a - {protein_a})
+    visible_a = exclusive_a[:max_exclusive]
+    visible_b = exclusive_b[:max_exclusive]
+    visible_shared = shared[:max_shared]
+    return {
+        "exclusive_a": exclusive_a,
+        "exclusive_b": exclusive_b,
+        "shared": shared,
+        "visible_a": visible_a,
+        "visible_b": visible_b,
+        "visible_shared": visible_shared,
+    }
+
+
+def render_structured_comparison_html(
+    proteins: dict[str, list[str]],
+    protein_a: str,
+    protein_b: str,
+) -> HTMLResponse:
+    layout = build_comparison_layout(proteins, protein_a, protein_b)
+    net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
+    net.set_options('{"physics":{"enabled":false},"interaction":{"hover":true,"navigationButtons":false}}')
+
+    net.add_node(protein_a, label=protein_a, color="#ff941f", size=42, x=-380, y=0,
+                 fixed={"x": True, "y": True}, title=f"Proteína A: {protein_a}")
+    net.add_node(protein_b, label=protein_b, color="#20c9c3", size=42, x=380, y=0,
+                 fixed={"x": True, "y": True}, title=f"Proteína B: {protein_b}")
+
+    visible_a = layout["visible_a"]
+    visible_b = layout["visible_b"]
+    visible_shared = layout["visible_shared"]
+    for index, node in enumerate(visible_a):
+        angle = 2.0 + (2.25 * index / max(1, len(visible_a) - 1))
+        x, y = -380 + 190 * cos(angle), 190 * sin(angle)
+        net.add_node(node, label=node, color="#83cfee", size=20, x=x, y=y,
+                     fixed={"x": True, "y": True}, title=f"Vecino exclusivo de A: {node}")
+        net.add_edge(protein_a, node, color="#176978", width=1.4)
+    for index, node in enumerate(visible_b):
+        angle = -1.12 + (2.24 * index / max(1, len(visible_b) - 1))
+        x, y = 380 + 190 * cos(angle), 190 * sin(angle)
+        net.add_node(node, label=node, color="#83cfee", size=20, x=x, y=y,
+                     fixed={"x": True, "y": True}, title=f"Vecino exclusivo de B: {node}")
+        net.add_edge(protein_b, node, color="#176978", width=1.4)
+    for index, node in enumerate(visible_shared):
+        y = -150 + (300 * index / max(1, len(visible_shared) - 1))
+        net.add_node(node, label=node, color="#78dc68", size=23, x=0, y=y,
+                     fixed={"x": True, "y": True}, title=f"Vecino compartido: {node}")
+        net.add_edge(protein_a, node, color="#176978", width=1.8)
+        net.add_edge(protein_b, node, color="#176978", width=1.8)
+
+    if protein_b in set(proteins[protein_a]):
+        net.add_edge(protein_a, protein_b, color="#ff941f", width=5, title="Asociación directa")
+
+    badges = [
+        ("__more_a__", len(layout["exclusive_a"]) - len(visible_a), -380, 245, "exclusivos A"),
+        ("__more_shared__", len(layout["shared"]) - len(visible_shared), 0, 245, "compartidos"),
+        ("__more_b__", len(layout["exclusive_b"]) - len(visible_b), 380, 245, "exclusivos B"),
+    ]
+    for node_id, hidden, x, y, description in badges:
+        if hidden > 0:
+            label = f"+{hidden}" + (" compartidos" if description == "compartidos" else "")
+            net.add_node(node_id, label=label, shape="box", color="#edfaff", font={"color": "#164c5c"},
+                         x=x, y=y, fixed={"x": True, "y": True}, title=f"{hidden} vecinos {description} adicionales")
+
+    styles = """
+    <style>
+      html, body { margin: 0; overflow: hidden; background: transparent; }
+      body > .card, #mynetwork { background: transparent; border: 0; padding: 0; }
+      #loadingBar { display: none !important; }
+    </style>
+    """
+    html = net.generate_html().replace("</head>", styles + "</head>", 1)
+    ready_script = """
+    <script>
+      network.once('afterDrawing', function () {
+        network.fit({ animation: false });
+        window.parent.postMessage('prote-prote:comparison-graph-ready', '*');
+      });
+    </script>
+    """
+    document, closing_tag, tail = html.rpartition("</body>")
+    return HTMLResponse(document + ready_script + closing_tag + tail)
+
+
+def render_comparison_image(
+    nodes: list[str],
+    edges: list[tuple[str, str]],
+    protein_a: str,
+    protein_b: str,
+    shared_neighbors: set[str],
+) -> Response:
+    graph = nx.Graph()
+    graph.add_nodes_from(nodes)
+    graph.add_edges_from(edges)
+    positions = nx.spring_layout(graph, seed=42, k=0.20, iterations=50)
+    colors = [
+        "#ff8539" if node == protein_a else
+        "#22bfc7" if node == protein_b else
+        "#7a68cf" if node in shared_neighbors else
+        "#8ecdd8"
+        for node in nodes
+    ]
+    sizes = [600 if node in (protein_a, protein_b) else 220 for node in nodes]
+    figure = Figure(figsize=(10, 8))
+    axes = figure.subplots()
+    nx.draw_networkx_edges(graph, positions, ax=axes, edge_color="#164c5c", width=0.8, alpha=0.45)
+    nx.draw_networkx_nodes(
+        graph, positions, ax=axes, node_color=colors, node_size=sizes,
+        edgecolors="#ffffff", linewidths=0.8,
+    )
+    if len(nodes) <= 80:
+        nx.draw_networkx_labels(graph, positions, ax=axes, font_size=7, font_color="#12333f")
+    axes.margins(0.12)
+    axes.set_axis_off()
+    with BytesIO() as output:
+        figure.savefig(output, format="png", backend="agg", transparent=True, bbox_inches="tight", dpi=160)
+        return Response(output.getvalue(), media_type="image/png")
+
+
+def render_structured_comparison_image(
+    proteins: dict[str, list[str]],
+    protein_a: str,
+    protein_b: str,
+) -> Response:
+    layout = build_comparison_layout(proteins, protein_a, protein_b)
+    positions = {protein_a: (-380, 0), protein_b: (380, 0)}
+    for index, node in enumerate(layout["visible_a"]):
+        angle = 2.0 + (2.25 * index / max(1, len(layout["visible_a"]) - 1))
+        positions[node] = (-380 + 190 * cos(angle), 190 * sin(angle))
+    for index, node in enumerate(layout["visible_b"]):
+        angle = -1.12 + (2.24 * index / max(1, len(layout["visible_b"]) - 1))
+        positions[node] = (380 + 190 * cos(angle), 190 * sin(angle))
+    for index, node in enumerate(layout["visible_shared"]):
+        positions[node] = (0, -150 + (300 * index / max(1, len(layout["visible_shared"]) - 1)))
+
+    figure = Figure(figsize=(14, 7))
+    axes = figure.subplots()
+    for node in layout["visible_a"]:
+        axes.plot(*zip(positions[protein_a], positions[node]), color="#176978", linewidth=1.2)
+    for node in layout["visible_b"]:
+        axes.plot(*zip(positions[protein_b], positions[node]), color="#176978", linewidth=1.2)
+    for node in layout["visible_shared"]:
+        axes.plot(*zip(positions[protein_a], positions[node]), color="#176978", linewidth=1.4)
+        axes.plot(*zip(positions[protein_b], positions[node]), color="#176978", linewidth=1.4)
+    if protein_b in set(proteins[protein_a]):
+        axes.plot(*zip(positions[protein_a], positions[protein_b]), color="#ff941f", linewidth=4)
+
+    for node, (x, y) in positions.items():
+        if node == protein_a:
+            color, size = "#ff941f", 2100
+        elif node == protein_b:
+            color, size = "#20c9c3", 2100
+        elif node in layout["visible_shared"]:
+            color, size = "#78dc68", 800
+        else:
+            color, size = "#83cfee", 620
+        axes.scatter(x, y, s=size, c=color, edgecolors="white", linewidths=1.6, zorder=3)
+        axes.text(x, y, node, ha="center", va="center", fontsize=8 if size < 2000 else 12, color="#12333f", zorder=4)
+
+    badges = [
+        (len(layout["exclusive_a"]) - len(layout["visible_a"]), -380, 245, ""),
+        (len(layout["shared"]) - len(layout["visible_shared"]), 0, 245, " compartidos"),
+        (len(layout["exclusive_b"]) - len(layout["visible_b"]), 380, 245, ""),
+    ]
+    for hidden, x, y, suffix in badges:
+        if hidden > 0:
+            axes.text(x, y, f"+{hidden}{suffix}", ha="center", va="center", fontsize=11, color="#164c5c",
+                      bbox={"boxstyle": "round,pad=0.35", "fc": "#edfaff", "ec": "white"})
+    axes.set_xlim(-650, 650)
+    axes.set_ylim(-300, 300)
+    axes.set_axis_off()
+    with BytesIO() as output:
+        figure.savefig(output, format="png", backend="agg", transparent=True, bbox_inches="tight", dpi=160)
+        return Response(output.getvalue(), media_type="image/png")
+
+
+@app.post("/api/datasets/compare-subgraph")
+def generate_comparison_subgraph(
+    file: UploadFile,
+    has_header: Annotated[bool, Form()],
+    protein_a: Annotated[str, Form()],
+    protein_b: Annotated[str, Form()],
+    distance: Annotated[int, Form(ge=1, le=3)] = 1,
+    node_limit: Annotated[int, Form(ge=2, le=1500)] = 300,
+    interactive: Annotated[bool, Form()] = True,
+    view_mode: Annotated[str, Form()] = "comparison",
+):
+    proteins, edges, _ = read_dataset(file, has_header)
+    comparison = compare_proteins(proteins, edges, protein_a, protein_b)
+    protein_a = comparison["protein_a"]["id"]
+    protein_b = comparison["protein_b"]["id"]
+    if view_mode not in {"comparison", "expanded"}:
+        raise HTTPException(status_code=422, detail="La vista solicitada no es válida.")
+    nodes = multi_source_neighborhood(proteins, (protein_a, protein_b), distance, node_limit)
+    selected = set(nodes)
+    visible_edges = [(source, target) for source, target in edges if source in selected and target in selected]
+    shared = set(comparison["shared_neighbors"])
+    if view_mode == "comparison":
+        unique_neighbors = set(proteins[protein_a]) | set(proteins[protein_b]) | {protein_a, protein_b}
+        result = {
+            "node_count": len(unique_neighbors),
+            "edge_count": len(proteins[protein_a]) + len(proteins[protein_b]) - (1 if protein_b in proteins[protein_a] else 0),
+        }
+    else:
+        result = {"node_count": len(nodes), "edge_count": len(visible_edges)}
+    if interactive:
+        renderer = render_structured_comparison_html(proteins, protein_a, protein_b) if view_mode == "comparison" else render_expanded_comparison_html(nodes, visible_edges, protein_a, protein_b, shared)
+        result["html"] = renderer.body.decode("utf-8")
+    else:
+        image = render_structured_comparison_image(proteins, protein_a, protein_b) if view_mode == "comparison" else render_comparison_image(nodes, visible_edges, protein_a, protein_b, shared)
+        result["image_base64"] = b64encode(image.body).decode("ascii")
+    return result
 
 
 def shortest_path(proteins: dict[str, list[str]], selected: set[str], origin: str, destination: str) -> list[str]:
