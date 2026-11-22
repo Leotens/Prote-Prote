@@ -23,6 +23,7 @@ export function useDatasetGraph() {
   const fullProteinDetails = ref<ProteinDetails | null>(null)
   const subgraphProteinDetails = ref<ProteinDetails | null>(null)
   const selectedProtein = computed(() => activeGraph.value === 'full' ? fullProteinDetails.value : subgraphProteinDetails.value)
+  let selectionSeed: number | undefined
   let pendingGraph: AbortController | undefined
 
   function clearGraph() {
@@ -51,9 +52,10 @@ export function useDatasetGraph() {
     clearGraph()
   })
 
-  async function generateGraph(dataset: Dataset, nodeLimit: number, interactive: boolean) {
+  async function generateGraph(dataset: Dataset, nodeLimit: number, interactive: boolean, random = false) {
     if (generatingGraph.value) return
 
+    selectionSeed = random ? Math.floor(Math.random() * 2147483647) : undefined
     generatingGraph.value = true
     clearGraph()
     const controller = new AbortController()
@@ -71,6 +73,7 @@ export function useDatasetGraph() {
         nodeLimit,
         interactive,
         controller.signal,
+        selectionSeed,
       )
       if (controller.signal.aborted) return
 
@@ -110,6 +113,7 @@ export function useDatasetGraph() {
         nodeLimit,
         interactive,
         controller.signal,
+        selectionSeed,
       )
       if (controller.signal.aborted) return
 
@@ -145,7 +149,7 @@ export function useDatasetGraph() {
     try {
       const record = await getStoredDataset(dataset.name)
       if (!record) throw new Error('No se pudo recuperar el dataset guardado en este navegador.')
-      const result = await requestDatasetShortestPath(record.file, record.hasHeader, origin, destination, nodeLimit, interactive, controller.signal)
+      const result = await requestDatasetShortestPath(record.file, record.hasHeader, origin, destination, nodeLimit, interactive, controller.signal, selectionSeed)
       if (controller.signal.aborted) return
 
       pathResult.value = result
@@ -186,7 +190,7 @@ export function useDatasetGraph() {
         const path = displayedPath.value
         const record = await getStoredDataset(dataset.name)
         if (!record || !path[0] || !path[path.length - 1]) throw new Error('No se pudo recuperar la ruta mostrada.')
-        const result = await requestDatasetShortestPath(record.file, record.hasHeader, path[0], path[path.length - 1]!, nodeLimit, false, controller.signal)
+        const result = await requestDatasetShortestPath(record.file, record.hasHeader, path[0], path[path.length - 1]!, nodeLimit, false, controller.signal, selectionSeed)
         if (!result.image_base64) throw new Error('No se pudo preparar la imagen PNG.')
         const anchor = document.createElement('a')
         anchor.href = `data:image/png;base64,${result.image_base64}`
@@ -200,8 +204,8 @@ export function useDatasetGraph() {
       if (!record) throw new Error('No se pudo recuperar el dataset guardado en este navegador.')
 
       const result = graphToDownload === 'subgraph'
-        ? await requestDatasetSubgraph(record.file, record.hasHeader, proteinId, distance, nodeLimit, false, controller.signal)
-        : await requestDatasetGraph(record.file, record.hasHeader, nodeLimit, false, controller.signal)
+        ? await requestDatasetSubgraph(record.file, record.hasHeader, proteinId, distance, nodeLimit, false, controller.signal, selectionSeed)
+        : await requestDatasetGraph(record.file, record.hasHeader, nodeLimit, false, controller.signal, selectionSeed)
 
       if (!('image' in result)) throw new Error('No se pudo preparar la imagen PNG.')
 

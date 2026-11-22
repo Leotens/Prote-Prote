@@ -1,4 +1,5 @@
 import csv
+from random import Random
 from base64 import b64encode
 from io import BytesIO
 from math import cos, sin, sqrt
@@ -259,6 +260,12 @@ def largest_component(proteins: dict[str, list[str]]) -> list[str]:
     return largest
 
 
+def select_graph_nodes(component: list[str], limit: int, seed: int | None = None) -> list[str]:
+    if seed is None:
+        return component[:limit]
+    return Random(seed).sample(component, min(limit, len(component)))
+
+
 def render_graph_image(nodes: list[str], edges: list[tuple[str, str]]) -> Response:
     graph = nx.Graph()
     graph.add_nodes_from(nodes)
@@ -303,10 +310,11 @@ def generate_graph(
     has_header: Annotated[bool, Form()],
     node_limit: Annotated[int, Form(ge=1, le=1500)],
     interactive: Annotated[bool, Form()] = True,
+    selection_seed: Annotated[int | None, Form()] = None,
 ):
     proteins, edges, _ = read_dataset(file, has_header)
     component = largest_component(proteins)
-    nodes = component[:node_limit]
+    nodes = select_graph_nodes(list(proteins) if selection_seed is not None else component, node_limit, selection_seed)
     selected = set(nodes)
     visible_edges = [(source, target) for source, target in edges if source in selected and target in selected]
     if not interactive:
@@ -319,7 +327,7 @@ def generate_graph(
         bgcolor="transparent",
     )
 
-    details = protein_details(proteins, nodes, len(component))
+    details = comparison_node_details(proteins, edges, set(nodes)) if selection_seed is not None else protein_details(proteins, nodes, len(component))
     for protein_id in nodes:
         net.add_node(protein_id, label=protein_id,
                      color="#ff8539", title=protein_id, protein_details=details[protein_id])
@@ -377,6 +385,7 @@ def generate_subgraph(
     node_limit: Annotated[int, Form(ge=1, le=1500)],
     interactive: Annotated[bool, Form()] = True,
     include_details: Annotated[bool, Form()] = False,
+    selection_seed: Annotated[int | None, Form()] = None,
 ):
     proteins, edges, _ = read_dataset(file, has_header)
     protein_id = protein_id.strip()
@@ -386,7 +395,7 @@ def generate_subgraph(
         raise HTTPException(status_code=404, detail=f"No se encontró la proteína {protein_id} en el dataset.")
 
     component = largest_component(proteins)
-    graph_nodes = component[:node_limit]
+    graph_nodes = select_graph_nodes(list(proteins) if selection_seed is not None else component, node_limit, selection_seed)
     graph_node_set = set(graph_nodes)
     if protein_id not in graph_node_set:
         raise HTTPException(
@@ -408,7 +417,7 @@ def generate_subgraph(
     nodes = list(distances)
     selected = set(nodes)
     visible_edges = [(source, target) for source, target in edges if source in selected and target in selected]
-    details = protein_details(proteins, graph_nodes, len(component))
+    details = comparison_node_details(proteins, edges, set(graph_nodes)) if selection_seed is not None else protein_details(proteins, graph_nodes, len(component))
     if not interactive:
         image = render_graph_image(nodes, visible_edges)
         if include_details:
@@ -971,12 +980,13 @@ def generate_shortest_path(
     destination: Annotated[str, Form()],
     node_limit: Annotated[int, Form(ge=1, le=1500)],
     interactive: Annotated[bool, Form()] = True,
+    selection_seed: Annotated[int | None, Form()] = None,
 ):
     proteins, _, _ = read_dataset(file, has_header)
     origin, destination = origin.strip(), destination.strip()
     if not origin or not destination:
         raise HTTPException(status_code=422, detail="Ingresa las proteínas de origen y destino.")
-    selected = set(largest_component(proteins)[:node_limit])
+    selected = set(select_graph_nodes(list(proteins) if selection_seed is not None else largest_component(proteins), node_limit, selection_seed))
     for protein_id in (origin, destination):
         if protein_id not in proteins:
             raise HTTPException(status_code=404, detail=f"No se encontró la proteína {protein_id} en el dataset.")

@@ -169,8 +169,10 @@ export async function requestDatasetShortestPath(
     nodeLimit: number,
     interactive: boolean,
     signal: AbortSignal,
+    selectionSeed?: number,
 ): Promise<ShortestPathResult> {
     const body = new FormData()
+    if (selectionSeed !== undefined) body.append('selection_seed', String(selectionSeed))
     body.append('file', file)
     body.append('has_header', String(hasHeader))
     body.append('origin', origin)
@@ -196,8 +198,10 @@ export async function requestDatasetGraph(
     nodeLimit: number,
     interactive: boolean,
     signal: AbortSignal,
+    selectionSeed?: number,
 ): Promise<GraphResponse> {
     const body = new FormData()
+    if (selectionSeed !== undefined) body.append('selection_seed', String(selectionSeed))
     body.append('file', file)
     body.append('has_header', String(hasHeader))
     body.append('node_limit', String(nodeLimit))
@@ -218,8 +222,10 @@ export async function requestDatasetSubgraph(
     nodeLimit: number,
     interactive: boolean,
     signal: AbortSignal,
+    selectionSeed?: number,
 ): Promise<GraphResponse> {
     const body = new FormData()
+    if (selectionSeed !== undefined) body.append('selection_seed', String(selectionSeed))
     body.append('file', file)
     body.append('has_header', String(hasHeader))
     body.append('protein_id', proteinId)

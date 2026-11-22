@@ -43,6 +43,20 @@ const {
 const nodeLimit = ref<number | null>(100)
 const interactiveLimit = 100
 const interactive = ref(true)
+const randomMode = ref(false)
+const randomWarning = ref<HTMLDialogElement | null>(null)
+
+function requestRandomMode(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.checked) { randomMode.value = false; return }
+  input.checked = false
+  randomWarning.value?.showModal()
+}
+
+function confirmRandomMode() {
+  randomMode.value = true
+  randomWarning.value?.close()
+}
 const generatedNodeLimit = ref<number | null>(null)
 const generatedInteractive = ref(true)
 const generatedSubgraphProtein = ref('')
@@ -170,7 +184,7 @@ function requestGraph(confirmInteractive = false) {
   loadWarning.value?.close()
   generatedNodeLimit.value = limit
   generatedInteractive.value = interactive.value
-  void generateGraph(dataset.value, limit, interactive.value)
+  void generateGraph(dataset.value, limit, interactive.value, randomMode.value)
 }
 
 async function requestSubgraph() {
@@ -246,6 +260,12 @@ function dismissPickerOnBlur(event: FocusEvent) {
           <input v-model="interactive" type="checkbox" />
           Modo interactivo
         </label>
+        <div class="random-option">
+          <label class="field-label interactive-option">
+            <input :checked="randomMode" type="checkbox" @change="requestRandomMode" />
+            Modo aleatorio
+          </label>
+        </div>
         <button
           class="graph-action dataset-graph-action"
           type="button"
@@ -449,6 +469,14 @@ function dismissPickerOnBlur(event: FocusEvent) {
         <button class="reset-path" type="button" :disabled="loadingGraph" @click="resetPath">Nueva consulta</button>
       </aside>
     </div>
+    <dialog ref="randomWarning" class="load-warning" aria-labelledby="random-warning-title" aria-describedby="random-warning-message">
+      <h2 id="random-warning-title">¿Activar modo aleatorio?</h2>
+      <p id="random-warning-message">Normalmente se toman nodos del grupo conectado más grande. El modo aleatorio elige de todo el dataset, sin optimizar la visualización; pueden quedar nodos aislados.</p>
+      <form method="dialog" class="load-warning-actions">
+        <button class="reset-path" autofocus>Cancelar</button>
+        <button class="graph-action" type="button" @click="confirmRandomMode">Activar modo aleatorio</button>
+      </form>
+    </dialog>
     <dialog ref="loadWarning" class="load-warning" aria-labelledby="load-warning-title" aria-describedby="load-warning-message">
       <h2 id="load-warning-title">El grafo puede tardar en cargar</h2>
       <p id="load-warning-message">
@@ -652,6 +680,8 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .graph-action:disabled { cursor: not-allowed; opacity: 0.8; }
 .interactive-option { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .interactive-option input { margin: 0; accent-color: #16566d; }
+.random-option { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.random-option .interactive-option { margin: 0; }
 .dataset-graph-action { margin-bottom: 16px; }
 .swap-button, .reset-path {
   align-self: center;
