@@ -52,10 +52,47 @@ const queriedDestination = ref('')
 const loadWarning = ref<HTMLDialogElement | null>(null)
 const graphFrame = ref<HTMLIFrameElement | null>(null)
 const subgraphFrame = ref<HTMLIFrameElement | null>(null)
+const graphPanel = ref<HTMLElement | null>(null)
+const graphStage = ref<HTMLDivElement | null>(null)
+const isFullscreen = ref(false)
+let resizeObserver: ResizeObserver | undefined
+let pendingFit = 0
 const fullViewerReady = ref(false)
 const subgraphViewerReady = ref(false)
 const viewerReady = computed(() => activeGraph.value === 'full' ? fullViewerReady.value : subgraphViewerReady.value)
 const loadingGraph = computed(() => generatingGraph.value || (!!graphHtml.value && !viewerReady.value))
+const canControlGraph = computed(() => !!graphHtml.value && viewerReady.value && !loadingGraph.value)
+
+function controlGraph(action: 'zoom-in' | 'zoom-out' | 'fit') {
+  if (!canControlGraph.value) return
+  const frame = activeGraph.value === 'full' ? graphFrame.value : subgraphFrame.value
+  frame?.contentWindow?.postMessage({ type: 'prote-prote:graph-control', action }, '*')
+}
+
+function fitGraph() {
+  window.cancelAnimationFrame(pendingFit)
+  pendingFit = window.requestAnimationFrame(() => controlGraph('fit'))
+}
+
+function onFullscreenChange() {
+  isFullscreen.value = document.fullscreenElement === graphPanel.value
+  fitGraph()
+}
+
+async function toggleFullscreen() {
+  try {
+    if (isFullscreen.value) await document.exitFullscreen()
+    else await graphPanel.value?.requestFullscreen()
+  } catch {
+    graphError.value = 'No se pudo abrir la pantalla completa en este navegador.'
+  }
+}
+
+watch(activeGraph, fitGraph, { flush: 'post' })
+watch(graphStage, (stage) => {
+  resizeObserver?.disconnect()
+  if (stage) resizeObserver?.observe(stage)
+}, { flush: 'post' })
 
 watch(fullGraphHtml, (html, _, onCleanup) => {
   fullViewerReady.value = false
@@ -101,10 +138,21 @@ function onViewerMessage(event: MessageEvent) {
   } else if (event.source === subgraphFrame.value?.contentWindow) {
     subgraphViewerReady.value = true
   }
+  if (activeGraph.value === 'full' ? fromFull : fromSubgraph) fitGraph()
 }
 
-onMounted(() => window.addEventListener('message', onViewerMessage))
-onBeforeUnmount(() => window.removeEventListener('message', onViewerMessage))
+onMounted(() => {
+  window.addEventListener('message', onViewerMessage)
+  document.addEventListener('fullscreenchange', onFullscreenChange)
+  resizeObserver = new ResizeObserver(fitGraph)
+  if (graphStage.value) resizeObserver.observe(graphStage.value)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('message', onViewerMessage)
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
+  resizeObserver?.disconnect()
+  window.cancelAnimationFrame(pendingFit)
+})
 
 watch(nodeLimit, (limit) => {
   if (typeof limit === 'number') interactive.value = limit <= interactiveLimit
@@ -256,7 +304,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </div>
       </aside>
 
-      <section class="glass-panel graph-panel" aria-label="Área del grafo">
+      <section ref="graphPanel" class="glass-panel graph-panel" aria-label="Área del grafo">
         <header class="graph-header">
           <div class="dataset-info">
             <div class="dataset-selector" @keydown.esc="pickerOpen && closePicker()" @focusout="dismissPickerOnBlur">
@@ -291,14 +339,17 @@ function dismissPickerOnBlur(event: FocusEvent) {
             </div>
           </div>
           <div class="graph-toolbar" aria-label="Herramientas del grafo">
-            <button type="button" aria-label="Acercar">
+            <button type="button" aria-label="Acercar" :disabled="!canControlGraph" @click="controlGraph('zoom-in')">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7v7M7 10.5h7"/></svg>
             </button>
-            <button type="button" aria-label="Alejar">
+            <button type="button" aria-label="Alejar" :disabled="!canControlGraph" @click="controlGraph('zoom-out')">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7 10.5h7"/></svg>
             </button>
+            <button type="button" aria-label="Centrar grafo" title="Centrar grafo" :disabled="!canControlGraph" @click="controlGraph('fit')">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg>
+            </button>
             <span class="toolbar-divider"></span>
-            <button type="button" aria-label="Pantalla completa">
+            <button type="button" :aria-label="isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'" :aria-pressed="isFullscreen" @click="toggleFullscreen">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg>
             </button>
             <button
@@ -319,7 +370,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </div>
 
         <p v-if="graphError" role="alert">{{ graphError }}</p>
-        <div v-if="hasFullGraph || hasSubgraph || loadingGraph" class="graph-stage">
+        <div v-if="hasFullGraph || hasSubgraph || loadingGraph" ref="graphStage" class="graph-stage">
           <iframe
             v-if="fullGraphHtml"
             ref="graphFrame"
@@ -630,6 +681,8 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .load-warning-actions button { width: auto; margin: 0; }
 
 .graph-panel { display: flex; flex-direction: column; background: linear-gradient(155deg, rgb(180 231 238 / 58%), rgb(154 217 227 / 43%) 52%, rgb(171 230 233 / 54%)); }
+.graph-panel:fullscreen { padding: 20px; overflow: auto; background: #a5d6da; }
+.graph-panel:fullscreen .graph-image { max-height: calc(100dvh - 160px); }
 .graph-view-switch { display: flex; align-self: center; gap: 4px; margin: 0 12px 8px; padding: 3px; border: 1px solid #96bdc8; border-radius: 11px; background: #c6e7ee; }
 .graph-view-switch button { border: 0; border-radius: 8px; padding: 5px 12px; background: transparent; color: #164c5c; cursor: pointer; font: inherit; font-size: 0.85rem; }
 .graph-view-switch button[aria-pressed='true'] { background: linear-gradient(#28758b, #134a61); color: white; }

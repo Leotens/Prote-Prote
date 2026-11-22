@@ -37,6 +37,17 @@ class ProteinDetailsTests(unittest.TestCase):
         self.assertIn(b"network.on('selectNode'", response.body)
         self.assertIn(b'"component_size": 4', response.body)
 
+    def test_original_and_neighborhood_graphs_accept_viewer_controls(self):
+        responses = [
+            generate_graph(self.dataset(), False, 4, True),
+            generate_subgraph(self.dataset(), False, "C", 1, 4, True, False),
+        ]
+        for response in responses:
+            with self.subTest():
+                self.assertIn(b"prote-prote:graph-control", response.body)
+                for action in (b"zoom-in", b"zoom-out", b"fit"):
+                    self.assertIn(b"event.data.action === '" + action + b"'", response.body)
+
     def test_zero_neighbors_and_self_loop_degree(self):
         self.assertEqual(protein_details({"A": ["B"]}, ["A"], 2)["A"]["degree"], 0)
         loop = protein_details({"A": ["A"]}, ["A"], 1)["A"]

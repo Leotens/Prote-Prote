@@ -365,7 +365,7 @@ def generate_graph(
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
-    html = document + ready_script + PROTEIN_SELECTION_SCRIPT + closing_tag + tail
+    html = document + ready_script + PROTEIN_SELECTION_SCRIPT + GRAPH_CONTROLS_SCRIPT + closing_tag + tail
     return HTMLResponse(html)
 
 
