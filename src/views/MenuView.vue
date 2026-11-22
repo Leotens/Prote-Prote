@@ -2,7 +2,7 @@
 import MenuButton from '../components/MenuButton.vue'
 
 defineProps<{ datasetName?: string }>()
-const emit = defineEmits<{ datasets: []; visualizer: []; compare: [] }>()
+const emit = defineEmits<{ datasets: []; visualizer: []; compare: []; credits: [] }>()
 </script>
 
 <template>
@@ -11,7 +11,7 @@ const emit = defineEmits<{ datasets: []; visualizer: []; compare: [] }>()
       <MenuButton class="button-load" surface="/images/boton_1.png" @click="emit('datasets')">Administrar <br> Datasets</MenuButton>
       <MenuButton class="button-visualize" surface="/images/boton_1.png" @click="emit('visualizer')">Visualizar<br />Dataset</MenuButton>
       <MenuButton class="button-compare" surface="/images/boton_2.png" @click="emit('compare')">Comparar<br />proteínas</MenuButton>
-      <MenuButton class="button-credits" surface="/images/boton_1.png">Créditos</MenuButton>
+      <MenuButton class="button-credits" surface="/images/boton_1.png" @click="emit('credits')">Créditos</MenuButton>
     </nav>
 
     <section class="hero" aria-label="Prote-Prote, visualizador de relaciones entre proteínas">

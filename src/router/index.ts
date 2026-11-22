@@ -3,6 +3,7 @@ import MenuView from '../views/MenuView.vue'
 import DatasetsView from '../views/DatasetsView.vue'
 import VisualizerView from '../views/VisualizerView.vue'
 import CompareProteinsView from '../views/CompareProteinsView.vue'
+import CreditsView from '../views/CreditsView.vue'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -36,6 +37,12 @@ export default createRouter({
       name: 'compare',
       component: CompareProteinsView,
       meta: { title: 'Comparar proteínas' },
+    },
+    {
+      path: '/credits',
+      name: 'credits',
+      component: CreditsView,
+      meta: { title: 'Créditos' },
     },
     { path: '/:pathMatch(.*)*', redirect: { name: 'menu' } },
   ],

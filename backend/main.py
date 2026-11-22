@@ -143,10 +143,9 @@ def comparison_node_details(
 
 
 def protein_details(proteins: dict[str, list[str]], nodes: list[str], component_size: int) -> dict:
-    selected = set(nodes)
     details = {}
     for node in nodes:
-        neighbors = [neighbor for neighbor in proteins[node] if neighbor in selected]
+        neighbors = list(proteins[node])
         details[node] = {
             "id": node,
             "degree": len(neighbors) + (1 if node in neighbors else 0),

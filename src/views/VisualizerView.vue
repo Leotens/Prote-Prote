@@ -426,7 +426,6 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
       <aside v-if="mode === 'neighborhood'" class="glass-panel details-panel">
         <h2>Detalles de la proteína</h2>
-        <p class="details-intro">{{ selectedProtein ? 'Grado y vecinos dentro del grafo generado. El componente corresponde al dataset completo.' : 'Genera un entorno o selecciona un nodo del grafo para ver sus detalles.' }}</p>
         <dl class="protein-details">
           <div><dt>ID</dt><dd>{{ selectedProtein?.id ?? '--' }}</dd></div>
           <div><dt>Grado</dt><dd>{{ selectedProtein?.degree ?? '--' }}</dd></div>

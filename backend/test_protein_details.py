@@ -21,10 +21,10 @@ class ProteinDetailsTests(unittest.TestCase):
         # A has B as a neighbor in the generated graph, outside C's distance-1 view.
         self.assertIn('"neighbors": ["B", "C"]', result["html"])
 
-    def test_node_limit_scopes_neighbors_but_not_component_size(self):
+    def test_node_limit_preserves_original_neighbors_and_degree(self):
         result = generate_subgraph(self.dataset(), False, "C", 1, 2, True, True)
-        self.assertEqual(result["details"]["neighbors"], ["A"])
-        self.assertEqual(result["details"]["degree"], 1)
+        self.assertEqual(result["details"]["neighbors"], ["A", "D"])
+        self.assertEqual(result["details"]["degree"], 2)
         self.assertEqual(result["details"]["component_size"], 4)
 
     def test_image_mode_also_returns_details(self):
@@ -49,7 +49,8 @@ class ProteinDetailsTests(unittest.TestCase):
                     self.assertIn(b"event.data.action === '" + action + b"'", response.body)
 
     def test_zero_neighbors_and_self_loop_degree(self):
-        self.assertEqual(protein_details({"A": ["B"]}, ["A"], 2)["A"]["degree"], 0)
+        self.assertEqual(protein_details({"A": []}, ["A"], 1)["A"]["degree"], 0)
+        self.assertEqual(protein_details({"A": ["B"]}, ["A"], 2)["A"]["degree"], 1)
         loop = protein_details({"A": ["A"]}, ["A"], 1)["A"]
         self.assertEqual(loop["degree"], 2)
         self.assertEqual(loop["neighbors"], ["A"])
