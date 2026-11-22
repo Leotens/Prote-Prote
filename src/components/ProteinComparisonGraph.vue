@@ -80,6 +80,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section ref="stage" class="comparison-graph" :aria-label="`Grafo de la proteína ${side}: ${proteinId}`">
+    <header class="graph-header">
     <h2>Proteína {{ side }}</h2>
     <div class="graph-tools" :aria-label="`Herramientas del subgrafo ${side}`">
       <button type="button" aria-label="Acercar" :disabled="!ready" @click="control('zoom-in')"><svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M10 7v6M7 10h6"/></svg></button>
@@ -88,6 +89,7 @@ onBeforeUnmount(() => {
       <button type="button" aria-label="Pantalla completa" @click="fullscreen"><svg viewBox="0 0 24 24"><path d="M3 9V3h6m6 0h6v6M3 15v6h6m6 0h6v-6"/></svg></button>
       <button type="button" aria-label="Descargar subgrafo como PNG" :disabled="!ready" @click="control('download')"><svg viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg></button>
     </div>
+    </header>
     <p v-if="error" role="alert">{{ error }}</p>
     <div class="graph-stage">
       <iframe ref="frame" :srcdoc="graph.html" :title="`Árbol de expansión mínima con Prim de la proteína ${side}: ${proteinId}`" sandbox="allow-scripts" :class="{ pending: !ready }"></iframe>
@@ -99,18 +101,23 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.comparison-graph { display: flex; min-width: 0; min-height: 0; overflow: hidden; flex-direction: column; align-items: center; padding: 12px; border: 1px solid #ccebef99; border-radius: 18px; background: #d5eef018; }
+.comparison-graph { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; align-items: center; }
 .comparison-graph:fullscreen { padding: 20px; background: #a5d6da; }
-h2 { margin: 0 0 5px; font-size: clamp(1.1rem, 1.5vw, 1.6rem); text-align: center; overflow-wrap: anywhere; }
-.graph-tools { display: flex; flex: none; max-width: 100%; gap: 4px; padding: 4px 10px; border-radius: 12px; background: #d5eef080; }
+.graph-header { position: absolute; z-index: 2; inset: 10px 12px auto; display: flex; align-items: center; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; pointer-events: none; }
+h2 { margin: 0; font-size: clamp(1.1rem, 1.5vw, 1.6rem); text-align: left; overflow-wrap: anywhere; }
+.graph-tools { display: flex; flex: none; max-width: 100%; gap: 4px; padding: 4px 10px; border-radius: 12px; background: #d5eef080; pointer-events: auto; }
 button { display: grid; place-items: center; width: 36px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: #154858; cursor: pointer; }
 button:hover { background: #d5eef0; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 button:focus-visible { outline: 2px solid #08485d; outline-offset: 2px; }
 button svg { width: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.graph-stage { position: relative; flex: 1; min-height: 0; width: 100%; overflow: hidden; }
+.graph-stage { position: relative; flex: 1; min-height: 0; width: 100%; overflow: hidden; border: 1px solid #ccebef99; border-radius: 18px; background: #d5eef018; }
 iframe { position: absolute; inset: 0; display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: transparent; }
 .pending { visibility: hidden; }
 .graph-loading { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; }
 .graph-loading img { width: 110px; }
+@media (max-width: 420px) {
+  .graph-tools { margin-left: auto; gap: 2px; padding-inline: 4px; }
+  button { width: 30px; }
+}
 </style>

@@ -20,6 +20,8 @@ const isFullscreen = ref(false)
 const comparisonGraphReady = ref(false)
 const selectedComparisonProtein = ref<ProteinDetails | null>(null)
 const displayMode = ref<'summary' | 'subgraph'>('summary')
+const expandedWarning = ref<HTMLDialogElement | null>(null)
+const expandedRelationLimit = 100
 const {
   comparisonResult,
   proteins,
@@ -29,7 +31,6 @@ const {
   comparing,
   comparisonSubgraphHtml,
   comparisonSubgraphError,
-  comparisonSubgraphCounts,
   mstComparisonResult,
   comparisonGraphMode,
   generatingComparisonSubgraph,
@@ -51,6 +52,11 @@ const exclusiveNeighborsB = computed(() => comparisonResult.value
   ? comparisonResult.value.protein_b.neighbors.filter(neighbor => !sharedNeighborSet.value.has(neighbor)).length
   : 0)
 const hasComparisonGraph = computed(() => !!comparisonSubgraphHtml.value || !!mstComparisonResult.value)
+const hasManyRelations = computed(() => {
+  const result = comparisonResult.value
+  if (!result) return false
+  return result.protein_a.degree + result.protein_b.degree - Number(result.directly_connected) > expandedRelationLimit
+})
 
 function componentNumber(label: string) {
   if (!comparisonResult.value) return '--'
@@ -82,8 +88,13 @@ async function requestComparisonSubgraph() {
   await generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value)
 }
 
-function changeComparisonGraphMode(mode: 'comparison' | 'expanded' | 'mst') {
+function changeComparisonGraphMode(mode: 'comparison' | 'expanded' | 'mst', confirmed = false) {
   if (mode === comparisonGraphMode.value || generatingComparisonSubgraph.value) return
+  if (mode === 'expanded' && hasManyRelations.value && !confirmed) {
+    expandedWarning.value?.showModal()
+    return
+  }
+  expandedWarning.value?.close()
   comparisonGraphReady.value = false
   selectedComparisonProtein.value = null
   void generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value, mode)
@@ -198,6 +209,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
           'empty-summary-panel': displayMode === 'summary' && !comparisonResult,
         }"
       >
+        <div class="panel-heading">
         <header class="dataset-info">
           <div class="dataset-selector" @keydown.esc="pickerOpen && closePicker()" @focusout="dismissPickerOnBlur">
             <button
@@ -228,6 +240,12 @@ function dismissPickerOnBlur(event: FocusEvent) {
             <span v-if="dataset.edges !== undefined">{{ formatCount(dataset.edges) }} asociaciones</span>
           </div>
         </header>
+        <div v-if="displayMode === 'subgraph'" class="comparison-view-switch" aria-label="Tipo de visualización">
+          <button type="button" :aria-pressed="comparisonGraphMode === 'comparison'" :disabled="generatingComparisonSubgraph" @click="changeComparisonGraphMode('comparison')">Vista comparativa</button>
+          <button type="button" :aria-pressed="comparisonGraphMode === 'mst'" :disabled="generatingComparisonSubgraph" @click="changeComparisonGraphMode('mst')">Vista simplificada MST</button>
+          <button type="button" :aria-pressed="comparisonGraphMode === 'expanded'" :disabled="generatingComparisonSubgraph" @click="changeComparisonGraphMode('expanded')">Red expandida</button>
+        </div>
+        </div>
 
         <template v-if="displayMode === 'summary'">
           <div v-if="!comparisonResult" class="empty-comparison">
@@ -283,7 +301,6 @@ function dismissPickerOnBlur(event: FocusEvent) {
           </section>
 
           <footer class="summary-footer">
-            <p>Las asociaciones requieren interpretación biológica adicional.</p>
             <button type="button" :disabled="!comparisonResult || generatingComparisonSubgraph" @click="requestComparisonSubgraph">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="m8 11 8-4m-8 6 8 4"/></svg>
               Visualizar ambas en un subgrafo
@@ -292,33 +309,8 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </template>
 
         <template v-else>
-          <div class="subgraph-heading">
-            <div>
-              <p v-if="comparisonSubgraphCounts">
-                {{ comparisonSubgraphCounts.nodes }} proteínas · {{ comparisonSubgraphCounts.edges }} asociaciones
-              </p>
-              <div class="comparison-view-switch" aria-label="Tipo de visualización">
-                <button
-                  type="button"
-                  :aria-pressed="comparisonGraphMode === 'comparison'"
-                  :disabled="generatingComparisonSubgraph"
-                  @click="changeComparisonGraphMode('comparison')"
-                >Vista comparativa</button>
-                <button
-                  type="button"
-                  :aria-pressed="comparisonGraphMode === 'expanded'"
-                  :disabled="generatingComparisonSubgraph"
-                  @click="changeComparisonGraphMode('expanded')"
-                >Red expandida</button>
-                <button
-                  type="button"
-                  :aria-pressed="comparisonGraphMode === 'mst'"
-                  :disabled="generatingComparisonSubgraph"
-                  @click="changeComparisonGraphMode('mst')"
-                >Vista simplificada MST</button>
-              </div>
-            </div>
-            <div v-if="comparisonGraphMode !== 'mst'" class="graph-toolbar" aria-label="Herramientas del subgrafo">
+          <div v-if="comparisonGraphMode !== 'mst'" class="subgraph-heading">
+            <div class="graph-toolbar" aria-label="Herramientas del subgrafo">
               <button type="button" aria-label="Acercar" :disabled="!comparisonGraphReady" @click="controlComparisonGraph('zoom-in')">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7v7M7 10.5h7"/></svg>
               </button>
@@ -389,18 +381,6 @@ function dismissPickerOnBlur(event: FocusEvent) {
             <p>Compara dos proteínas para visualizar aquí sus conexiones.</p>
           </div>
 
-          <div v-if="hasComparisonGraph" class="graph-legend" aria-label="Leyenda de colores del grafo">
-            <strong>Leyenda</strong>
-            <span><i class="legend-dot protein-a-color"></i>Proteína A</span>
-            <span><i class="legend-dot protein-b-color"></i>Proteína B</span>
-            <span>
-              <i class="legend-dot" :class="comparisonGraphMode === 'comparison' ? 'shared-comparison-color' : 'shared-expanded-color'"></i>
-              Vecino compartido
-            </span>
-            <span><i class="legend-dot exclusive-color"></i>Vecino exclusivo</span>
-            <span><i class="legend-line"></i>Asociación directa</span>
-          </div>
-
           <aside v-if="selectedComparisonProtein" class="selected-node-details" aria-live="polite">
             <div>
               <strong>Proteína {{ selectedComparisonProtein.id }}</strong>
@@ -413,10 +393,28 @@ function dismissPickerOnBlur(event: FocusEvent) {
           </aside>
 
           <footer class="subgraph-footer">
-            <p>Las asociaciones requieren interpretación biológica adicional.</p>
+            <div v-if="hasComparisonGraph" class="graph-legend" aria-label="Leyenda de colores del grafo">
+              <strong>Leyenda</strong>
+              <span><i class="legend-dot protein-a-color"></i>Proteína A</span>
+              <span><i class="legend-dot protein-b-color"></i>Proteína B</span>
+              <span>
+                <i class="legend-dot" :class="comparisonGraphMode === 'comparison' ? 'shared-comparison-color' : 'shared-expanded-color'"></i>
+                Vecino compartido
+              </span>
+              <span><i class="legend-dot exclusive-color"></i>Vecino exclusivo</span>
+              <span><i class="legend-line"></i>Asociación directa</span>
+            </div>
             <button type="button" @click="displayMode = 'summary'">Vista resumida</button>
           </footer>
         </template>
+        <dialog ref="expandedWarning" class="expanded-warning" aria-labelledby="expanded-warning-title" aria-describedby="expanded-warning-message">
+          <h2 id="expanded-warning-title">¿Ver la red expandida?</h2>
+          <p id="expanded-warning-message">Estas proteínas tienen muchas relaciones. La red expandida puede tardar en cargar y ser más difícil de explorar. ¿Seguro que quieres continuar?</p>
+          <form method="dialog" class="expanded-warning-actions">
+            <button autofocus>Cancelar</button>
+            <button type="button" @click="changeComparisonGraphMode('expanded', true)">Ver red expandida</button>
+          </form>
+        </dialog>
       </section>
     </div>
   </section>
@@ -490,17 +488,26 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .venn-shared { position: absolute; z-index: 2; top: 54px; left: 50%; display: flex; width: 58px; flex-direction: column; align-items: center; transform: translateX(-50%); }
 .direct-relation { display: flex; justify-content: space-between; gap: 12px; margin: 4px 0 0; color: #34535e; font-size: 0.85rem; }
 .direct-relation small { white-space: nowrap; }
-.summary-footer { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-top: clamp(10px, 2dvh, 22px); }
-.summary-footer p { max-width: 420px; margin: 0; font-size: 0.9rem; }
+.summary-footer { display: flex; align-items: end; justify-content: flex-end; gap: 16px; margin-top: clamp(10px, 2dvh, 22px); }
 .summary-footer button { display: inline-flex; min-width: min(100%, 340px); align-items: center; justify-content: center; gap: 9px; padding: 8px 22px; }
 .summary-footer button svg { width: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.subgraph-panel { position: relative; grid-template-rows: auto auto minmax(0, 1fr) auto auto auto; overflow: hidden; }
-.subgraph-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0 5px; }
-.subgraph-heading p { margin: 0 0 5px; color: #34535e; font-size: 0.9rem; }
-.comparison-view-switch { display: flex; gap: 4px; }
+.subgraph-panel { position: relative; display: flex; flex-direction: column; overflow: hidden; }
+.panel-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px 16px; }
+.subgraph-panel .panel-heading { flex: none; margin-bottom: 6px; }
+.subgraph-heading { display: flex; flex: none; justify-content: flex-end; padding-bottom: 5px; }
+.comparison-view-switch { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; margin-left: auto; }
+.subgraph-panel > :is(.mst-comparison-grid, .comparison-graph-area, .empty-subgraph) { flex: 1; }
+.subgraph-panel > :is(.selected-node-details, .subgraph-footer) { flex: none; }
 .comparison-view-switch button { border: 1px solid #8aafbb; border-radius: 999px; padding: 5px 10px; background: rgb(237 250 255 / 60%); color: #164c5c; cursor: pointer; font: inherit; font-size: 0.78rem; }
 .comparison-view-switch button[aria-pressed='true'] { background: linear-gradient(#28758b, #134a61); color: white; }
 .comparison-view-switch button:disabled { cursor: wait; opacity: 0.65; }
+.expanded-warning { width: min(440px, calc(100% - 32px)); padding: 20px; border: 1px solid #8aafbb; border-radius: 16px; background: #e4f7fb; color: #12333f; }
+.expanded-warning::backdrop { background: rgb(18 51 63 / 55%); }
+.expanded-warning h2 { margin: 0 0 8px; font-size: 1.25rem; }
+.expanded-warning p { margin: 0 0 16px; }
+.expanded-warning-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.expanded-warning-actions button { border: 1px solid #8aafbb; border-radius: 999px; padding: 8px 16px; background: #f5fcff; color: #164c5c; cursor: pointer; font: inherit; }
+.expanded-warning-actions button:last-child { background: linear-gradient(#28758b, #134a61); color: white; }
 .graph-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 14px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }
 .graph-toolbar button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 8px; padding: 0; background: transparent; color: #154858; }
 .graph-toolbar button:disabled { cursor: not-allowed; opacity: 0.5; }
@@ -516,7 +523,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .graph-loading-overlay { position: absolute; z-index: 2; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgb(181 229 237 / 82%); color: #164c5c; font-weight: 700; }
 .loading-spinner { width: 24px; height: 24px; border: 3px solid rgb(22 76 92 / 20%); border-top-color: #16566d; border-radius: 50%; animation: comparison-spin 700ms linear infinite; }
 @keyframes comparison-spin { to { transform: rotate(360deg); } }
-.graph-legend { display: flex; width: 100%; align-self: end; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px 14px; margin-top: clamp(8px, 1.2dvh, 14px); padding: 6px 10px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 12px; background: rgb(237 250 255 / 35%); color: #164c5c; font-size: 0.75rem; }
+.graph-legend { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px 14px; padding: 6px 10px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 12px; background: rgb(237 250 255 / 35%); color: #164c5c; font-size: 0.75rem; }
 .graph-legend strong { margin-right: 2px; }
 .graph-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .legend-dot { display: inline-block; width: 12px; height: 12px; border: 1px solid rgb(255 255 255 / 85%); border-radius: 50%; box-shadow: 0 0 0 1px rgb(22 76 92 / 18%); }
@@ -532,9 +539,8 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .selected-node-details span { font-size: 0.82rem; }
 .selected-node-details button { width: 26px; height: 26px; flex: none; border: 0; border-radius: 50%; background: rgb(22 86 109 / 14%); color: #164c5c; cursor: pointer; font-size: 1.2rem; line-height: 1; }
 .summary-panel:fullscreen { width: 100vw; height: 100vh; border-radius: 0; background: linear-gradient(155deg, #c6edf3, #9fd9e4); }
-.subgraph-footer { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-top: clamp(7px, 1dvh, 11px); }
-.subgraph-footer p { max-width: 420px; margin: 0; font-size: 0.9rem; }
-.subgraph-footer button { min-width: min(100%, 240px); padding: 8px 22px; }
+.subgraph-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: clamp(7px, 1dvh, 11px); }
+.subgraph-footer button { flex: none; min-width: min(100%, 180px); padding: 8px 22px; }
 
 @media (max-width: 760px) {
   .comparison-inputs { grid-template-columns: 1fr 1fr; }
