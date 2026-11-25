@@ -21,6 +21,7 @@ const comparisonGraphReady = ref(false)
 const selectedComparisonProtein = ref<ProteinDetails | null>(null)
 const displayMode = ref<'summary' | 'subgraph'>('summary')
 const expandedWarning = ref<HTMLDialogElement | null>(null)
+const sharedNeighborsDialog = ref<HTMLDialogElement | null>(null)
 const expandedRelationLimit = 100
 const {
   comparisonResult,
@@ -52,20 +53,41 @@ const exclusiveNeighborsB = computed(() => comparisonResult.value
   ? comparisonResult.value.protein_b.neighbors.filter(neighbor => !sharedNeighborSet.value.has(neighbor)).length
   : 0)
 const hasComparisonGraph = computed(() => !!comparisonSubgraphHtml.value || !!mstComparisonResult.value)
+function comparisonComponentNumber(side: 'A' | 'B') {
+  if (!comparisonResult.value) return '--'
+  return side === 'A' || comparisonResult.value.same_component ? 1 : 2
+}
 const hasManyRelations = computed(() => {
   const result = comparisonResult.value
   if (!result) return false
   return result.protein_a.degree + result.protein_b.degree - Number(result.directly_connected) > expandedRelationLimit
 })
-
-function componentNumber(label: string) {
-  if (!comparisonResult.value) return '--'
-  return comparisonResult.value.same_component || label === 'A' ? 1 : 2
-}
+const biologicalInterpretation = computed(() => {
+  const result = comparisonResult.value
+  if (!result) return null
+  const shared = result.shared_neighbors_count
+  if (shared === 0) {
+    return {
+      title: 'Sin vecinos compartidos',
+      description: result.same_component
+        ? 'Las proteínas pertenecen al mismo grupo conectado, pero no comparten vecinos directos. Esto no implica por sí solo una función biológica común.'
+        : 'No se observan vecinos compartidos ni un camino de asociaciones entre ambas proteínas en este dataset.',
+    }
+  }
+  const sharedLabel = shared === 1 ? '1 vecino compartido' : `${shared} vecinos compartidos`
+  return {
+    title: 'Interacción indirecta por vecinos',
+    description: `Ambas proteínas presentan una interacción indirecta mediante ${sharedLabel}, lo que evidencia una conexión entre sus entornos en la red.`,
+  }
+})
 
 function closePicker() {
   pickerOpen.value = false
   pickerTrigger.value?.focus()
+}
+
+function openSharedNeighbors() {
+  if (comparisonResult.value) sharedNeighborsDialog.value?.showModal()
 }
 
 function selectDataset(option: Dataset) {
@@ -100,8 +122,13 @@ function changeComparisonGraphMode(mode: 'comparison' | 'expanded' | 'mst', conf
   void generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value, mode)
 }
 
-function controlComparisonGraph(action: 'zoom-in' | 'zoom-out' | 'fit') {
+function controlComparisonGraph(action: 'zoom-in' | 'zoom-out' | 'fit' | 'reset-focus') {
   comparisonGraphFrame.value?.contentWindow?.postMessage({ type: 'prote-prote:graph-control', action }, '*')
+}
+
+function clearSelectedComparisonProtein() {
+  selectedComparisonProtein.value = null
+  controlComparisonGraph('reset-focus')
 }
 
 function requestComparisonDownload() {
@@ -126,6 +153,8 @@ function handleComparisonGraphMessage(event: MessageEvent) {
     comparisonGraphReady.value = true
   } else if (event.data?.type === 'prote-prote:protein-selected') {
     selectedComparisonProtein.value = event.data.details as ProteinDetails
+  } else if (event.data?.type === 'prote-prote:protein-cleared') {
+    selectedComparisonProtein.value = null
   }
 }
 
@@ -193,10 +222,9 @@ function dismissPickerOnBlur(event: FocusEvent) {
           </div>
           <p v-else class="selected-protein">Seleccionada</p>
           <dl>
-            <div><dt>Grado</dt><dd>{{ protein.details?.degree ?? '--' }}</dd></div>
-            <div><dt>Vecinos</dt><dd>{{ protein.details?.neighbors.length ?? '--' }}</dd></div>
-            <div><dt>Componente</dt><dd>{{ protein.details ? componentNumber(protein.label) : '--' }}</dd></div>
-            <div><dt>Tamaño del componente</dt><dd>{{ protein.details?.component_size ?? '--' }}</dd></div>
+            <div><dt>Vecinos</dt><dd>{{ protein.details?.degree ?? '--' }}</dd></div>
+            <div><dt>Componente</dt><dd>{{ protein.details ? comparisonComponentNumber(protein.label as 'A' | 'B') : '--' }}</dd></div>
+            <div><dt>Tamaño del grupo</dt><dd>{{ protein.details?.component_size ?? '--' }}</dd></div>
           </dl>
         </article>
       </aside>
@@ -258,50 +286,77 @@ function dismissPickerOnBlur(event: FocusEvent) {
             <p>Ingresa dos identificadores para consultar su relación, vecinos y componentes conectados.</p>
           </div>
           <div v-else class="comparison-result">
-            <h1>Análisis comparativo entre ambas proteínas</h1>
             <div class="component-banner" :class="{ different: !comparisonResult.same_component }">
               <span class="component-icon" aria-hidden="true">{{ comparisonResult.same_component ? '✓' : '!' }}</span>
               <div>
-                <strong>{{ comparisonResult.same_component ? 'Mismo componente conectado' : 'Componentes diferentes' }}</strong>
+                <strong>{{ comparisonResult.same_component ? 'Mismo grupo conectado' : 'Grupos conectados diferentes' }}</strong>
                 <small>
                   {{ comparisonResult.same_component
-                    ? 'Ambas proteínas pertenecen al mismo componente de la red.'
-                    : 'Las proteínas no están conectadas dentro del dataset.' }}
+                    ? 'Existe un camino de asociaciones entre ambas proteínas.'
+                    : 'No existe un camino de asociaciones entre ambas proteínas.' }}
                 </small>
               </div>
             </div>
           </div>
 
           <div class="summary-metrics" aria-label="Resumen de comparación">
-            <div><span>Vecinos compartidos</span><strong>{{ comparisonResult?.shared_neighbors_count ?? '--' }}</strong></div>
-            <div><span>Diferencia de grado</span><strong>{{ comparisonResult?.degree_difference ?? '--' }}</strong></div>
-            <div><span>Componente</span><strong>{{ comparisonResult ? (comparisonResult.same_component ? 'Mismo' : 'Diferente') : '--' }}</strong></div>
+            <button class="metric-card shared-neighbors-card" type="button" :disabled="!comparisonResult" @click="openSharedNeighbors">
+              <span>Vecinos compartidos</span>
+              <strong>{{ comparisonResult?.shared_neighbors_count ?? '--' }}</strong>
+              <small v-if="comparisonResult">Ver lista</small>
+            </button>
+            <div class="metric-card"><span>Diferencia de vecinos</span><strong>{{ comparisonResult?.degree_difference ?? '--' }}</strong></div>
+            <div class="metric-card"><span>Asociación directa</span><strong>{{ comparisonResult ? (comparisonResult.directly_connected ? 'Sí' : 'No') : '--' }}</strong></div>
           </div>
 
-          <section v-if="comparisonResult" class="venn-section" aria-label="Diagrama de vecinos compartidos">
-            <p class="venn-title">Diagrama de Venn</p>
-            <div class="venn-diagram">
-              <div class="venn-circle venn-a">
-                <strong>{{ exclusiveNeighborsA }}</strong>
-                <span>exclusivos A</span>
-              </div>
-              <div class="venn-circle venn-b">
-                <strong>{{ exclusiveNeighborsB }}</strong>
-                <span>exclusivos B</span>
-              </div>
-              <div class="venn-shared">
-                <strong>{{ comparisonResult.shared_neighbors_count }}</strong>
-                <span>comunes</span>
+          <section v-if="comparisonResult" class="comparison-detail" aria-label="Detalle de la comparación">
+            <div class="venn-section" aria-label="Diagrama de vecinos compartidos">
+              <div class="venn-diagram" :class="{ disjoint: comparisonResult.shared_neighbors_count === 0 }">
+                <div class="venn-circle venn-a">
+                  <strong>{{ exclusiveNeighborsA }}</strong>
+                  <span>Solo A</span>
+                </div>
+                <div class="venn-circle venn-b">
+                  <strong>{{ exclusiveNeighborsB }}</strong>
+                  <span>Solo B</span>
+                </div>
+                <div v-if="comparisonResult.shared_neighbors_count > 0" class="venn-shared">
+                  <strong>{{ comparisonResult.shared_neighbors_count }}</strong>
+                  <span>comunes</span>
+                </div>
               </div>
             </div>
-            <p class="direct-relation">
-              {{ comparisonResult.directly_connected ? 'Las proteínas tienen una asociación directa.' : 'No existe una asociación directa entre ambas.' }}
-              <small>UFDS: {{ comparisonResult.elapsed_ms.toFixed(2) }} ms</small>
-            </p>
+            <article
+              v-if="biologicalInterpretation"
+              class="biological-interpretation"
+              :class="{ 'no-shared-neighbors': comparisonResult.shared_neighbors_count === 0 }"
+            >
+              <p>Interpretación biológica</p>
+              <h2>{{ biologicalInterpretation.title }}</h2>
+              <span>{{ biologicalInterpretation.description }}</span>
+            </article>
           </section>
 
-          <footer class="summary-footer">
-            <button type="button" :disabled="!comparisonResult || generatingComparisonSubgraph" @click="requestComparisonSubgraph">
+          <div v-if="comparisonResult" class="summary-bottom">
+            <p class="direct-relation">
+              {{ comparisonResult.directly_connected ? 'Las proteínas tienen una asociación directa.' : 'No existe una asociación directa entre ambas.' }}
+            </p>
+            <details class="technical-details">
+              <summary>Detalles técnicos</summary>
+              <div>
+                <span>Algoritmo: UFDS</span>
+                <span>Tiempo: {{ comparisonResult.elapsed_ms.toFixed(2) }} ms</span>
+              </div>
+            </details>
+            <footer class="summary-footer">
+              <button type="button" :disabled="generatingComparisonSubgraph" @click="requestComparisonSubgraph">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="m8 11 8-4m-8 6 8 4"/></svg>
+                Visualizar ambas en un subgrafo
+              </button>
+            </footer>
+          </div>
+          <footer v-else class="summary-footer">
+            <button type="button" disabled>
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="m8 11 8-4m-8 6 8 4"/></svg>
               Visualizar ambas en un subgrafo
             </button>
@@ -316,6 +371,15 @@ function dismissPickerOnBlur(event: FocusEvent) {
               </button>
               <button type="button" aria-label="Alejar" :disabled="!comparisonGraphReady" @click="controlComparisonGraph('zoom-out')">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7 10.5h7"/></svg>
+              </button>
+              <button
+                type="button"
+                aria-label="Centrar grafo"
+                title="Centrar grafo"
+                :disabled="!comparisonGraphReady"
+                @click="controlComparisonGraph('fit')"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg>
               </button>
               <span class="toolbar-divider"></span>
               <button
@@ -384,12 +448,10 @@ function dismissPickerOnBlur(event: FocusEvent) {
           <aside v-if="selectedComparisonProtein" class="selected-node-details" aria-live="polite">
             <div>
               <strong>Proteína {{ selectedComparisonProtein.id }}</strong>
-              <span>Grado: {{ selectedComparisonProtein.degree }}</span>
-              <span>Vecinos: {{ selectedComparisonProtein.neighbors.length }}</span>
-              <span>Componente: {{ selectedComparisonProtein.component }}</span>
-              <span>Tamaño: {{ selectedComparisonProtein.component_size }}</span>
+              <span>Vecinos: {{ selectedComparisonProtein.degree }}</span>
+              <span>Tamaño del grupo: {{ selectedComparisonProtein.component_size }}</span>
             </div>
-            <button type="button" aria-label="Cerrar detalles" @click="selectedComparisonProtein = null">×</button>
+            <button type="button" aria-label="Cerrar detalles y restaurar red" @click="clearSelectedComparisonProtein">×</button>
           </aside>
 
           <footer class="subgraph-footer">
@@ -398,15 +460,34 @@ function dismissPickerOnBlur(event: FocusEvent) {
               <span><i class="legend-dot protein-a-color"></i>Proteína A</span>
               <span><i class="legend-dot protein-b-color"></i>Proteína B</span>
               <span>
-                <i class="legend-dot" :class="comparisonGraphMode === 'comparison' ? 'shared-comparison-color' : 'shared-expanded-color'"></i>
+                <i class="legend-dot shared-color"></i>
                 Vecino compartido
               </span>
               <span><i class="legend-dot exclusive-color"></i>Vecino exclusivo</span>
-              <span><i class="legend-line"></i>Asociación directa</span>
+              <span v-if="comparisonGraphMode !== 'mst'">
+                <i class="legend-line network-edge"></i>Asociación con vecino
+              </span>
+              <span>
+                <i class="legend-line" :class="{ 'mst-edge': comparisonGraphMode === 'mst' }"></i>
+                {{ comparisonGraphMode === 'mst' ? 'Asociación con vecino' : 'Asociación directa' }}
+              </span>
             </div>
             <button type="button" @click="displayMode = 'summary'">Vista resumida</button>
           </footer>
         </template>
+        <dialog ref="sharedNeighborsDialog" class="shared-neighbors-dialog" aria-labelledby="shared-neighbors-title">
+          <header>
+            <div>
+              <h2 id="shared-neighbors-title">Vecinos compartidos</h2>
+              <p>{{ comparisonResult?.shared_neighbors_count ?? 0 }} proteínas conectadas con A y B</p>
+            </div>
+            <form method="dialog"><button aria-label="Cerrar lista">×</button></form>
+          </header>
+          <ul v-if="comparisonResult?.shared_neighbors.length">
+            <li v-for="neighbor in comparisonResult.shared_neighbors" :key="neighbor">Proteína {{ neighbor }}</li>
+          </ul>
+          <p v-else class="empty-shared-list">No existen vecinos compartidos entre estas proteínas.</p>
+        </dialog>
         <dialog ref="expandedWarning" class="expanded-warning" aria-labelledby="expanded-warning-title" aria-describedby="expanded-warning-message">
           <h2 id="expanded-warning-title">¿Ver la red expandida?</h2>
           <p id="expanded-warning-message">Estas proteínas tienen muchas relaciones. La red expandida puede tardar en cargar y ser más difícil de explorar. ¿Seguro que quieres continuar?</p>
@@ -443,9 +524,10 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .comparison-inputs input::placeholder { color: #6a858e; }
 .comparison-error { margin: 0 10px; color: #792434; font-weight: 700; text-align: center; }
 .compare-button, .summary-footer button, .subgraph-footer button { min-height: 36px; border: 1px solid rgb(255 255 255 / 35%); border-radius: 999px; background: linear-gradient(#22c0d3, #1550bd); box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%), 0 4px 10px rgb(12 76 103 / 20%); color: white; cursor: pointer; font: inherit; font-size: 0.92rem; font-weight: 700; }
+.compare-button { min-height: 44px; }
 .compare-button:disabled, .summary-footer button:disabled { cursor: not-allowed; opacity: 0.78; }
 .summary-footer button:hover, .subgraph-footer button:hover { filter: brightness(1.06); }
-.compare-grid { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(230px, 0.66fr) minmax(0, 3fr); gap: clamp(8px, 1vw, 16px); }
+.compare-grid { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(230px, 0.66fr) minmax(0, 3fr); align-items: stretch; gap: clamp(8px, 1vw, 16px); }
 .protein-column { display: grid; min-height: 0; grid-template-rows: 1fr 1fr; gap: clamp(8px, 1dvh, 12px); }
 .protein-card { padding: clamp(9px, 1vw, 14px); }
 .protein-card h2 { margin: 0 0 3px; font-size: clamp(1.05rem, 1.3vw, 1.35rem); }
@@ -456,39 +538,61 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .protein-card dl div { display: flex; justify-content: space-between; gap: 6px; padding: 4px 1px; border-bottom: 1px solid rgb(43 100 104 / 20%); font-size: 0.82rem; }
 .protein-card dd { margin: 0; color: #34535e; }
 .selected-protein { margin: 3px 0; color: #16566d; font-size: 0.82rem; font-weight: 700; text-align: center; }
-.summary-panel { display: grid; min-height: 0; grid-template-rows: auto auto auto minmax(150px, 1fr) auto; padding: clamp(10px, 1.2vw, 18px); }
-.empty-summary-panel { grid-template-rows: auto minmax(130px, 1fr) auto auto; }
+.summary-panel { container-type: inline-size; display: grid; width: 100%; height: 100%; min-height: 0; grid-template-rows: auto auto auto minmax(230px, 1fr) auto; align-self: stretch; align-content: stretch; padding: clamp(10px, 1.2vw, 18px); }
+.empty-summary-panel { height: 100%; align-self: stretch; grid-template-rows: auto minmax(130px, 1fr) auto auto; }
 .empty-comparison { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .empty-comparison svg { width: clamp(52px, 5vw, 74px); }
 .empty-comparison h1 { margin: 6px 0; font-size: clamp(1.3rem, 1.8vw, 1.8rem); }
 .empty-comparison p { max-width: 600px; margin: 0; font-size: clamp(0.85rem, 1vw, 1rem); line-height: 1.35; }
-.comparison-result { display: flex; min-height: 0; flex-direction: column; align-items: center; justify-content: center; padding: 4px 12px 12px; text-align: center; }
-.comparison-result h1 { margin: 0 0 8px; font-size: clamp(1.5rem, 2.4vw, 2.5rem); }
-.component-banner { display: flex; width: min(100%, 620px); align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid rgb(255 255 255 / 55%); border-radius: 9px; background: rgb(174 244 226 / 56%); color: #166053; text-align: left; }
+.comparison-result { display: flex; min-height: max-content; flex-direction: column; justify-content: center; padding: 3px 0 8px; }
+.component-banner { display: flex; width: 100%; min-height: clamp(64px, 5.4vw, 82px); align-items: center; gap: clamp(9px, 1vw, 14px); padding: clamp(10px, 1vw, 15px) clamp(12px, 1.35vw, 20px); border: 1px solid rgb(255 255 255 / 65%); border-radius: 10px; background: rgb(174 244 226 / 62%); color: #15584e; text-align: left; }
 .component-banner.different { background: rgb(255 214 187 / 58%); color: #7b3c25; }
-.component-icon { display: grid; width: 28px; height: 28px; flex: none; place-items: center; border: 2px solid currentColor; border-radius: 50%; font-weight: 700; }
+.component-icon { display: grid; width: clamp(29px, 2.5vw, 36px); height: clamp(29px, 2.5vw, 36px); flex: none; place-items: center; border: 2px solid currentColor; border-radius: 50%; font-size: clamp(0.95rem, 1.2vw, 1.15rem); font-weight: 800; }
 .component-banner div { display: grid; gap: 2px; }
-.component-banner small { color: #34535e; }
-.summary-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(8px, 2vw, 32px); }
-.summary-metrics div { display: grid; min-height: 82px; place-items: center; gap: 4px; padding: 10px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 10px; background: rgb(236 247 248 / 32%); text-align: center; }
-.summary-metrics strong { font-size: 1.2rem; }
+.component-banner strong { font-size: clamp(0.82rem, 0.92vw, 0.95rem); overflow-wrap: anywhere; }
+.component-banner small { color: #294d57; font-size: clamp(0.68rem, 0.78vw, 0.8rem); overflow-wrap: anywhere; }
+.summary-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: clamp(8px, 1.2vw, 18px); }
+.summary-metrics .metric-card { display: grid; min-height: clamp(76px, 6.2vw, 94px); place-items: center; gap: 4px; padding: clamp(9px, 0.9vw, 13px) clamp(10px, 1vw, 15px); border: 1px solid rgb(255 255 255 / 72%); border-radius: 10px; background: rgb(232 248 250 / 62%); color: inherit; font: inherit; text-align: left; }
+.summary-metrics button.metric-card { cursor: pointer; }
+.summary-metrics button.metric-card:hover { border-color: #56aabb; background: rgb(240 253 255 / 78%); }
+.summary-metrics button.metric-card:disabled { cursor: default; }
+.shared-neighbors-card small { width: 100%; color: #176b83; font-size: 0.68rem; font-weight: 700; }
+.summary-metrics span { width: 100%; color: #173f4c; font-size: clamp(0.72rem, 0.82vw, 0.84rem); font-weight: 700; overflow-wrap: anywhere; }
+.summary-metrics strong { width: 100%; color: #092f3d; font-size: clamp(1.25rem, 1.55vw, 1.6rem); font-weight: 800; }
+.summary-metrics strong { font-size: 1.05rem; }
 .empty-summary-panel .summary-metrics { width: min(100%, 940px); justify-self: center; gap: clamp(8px, 1.3vw, 20px); }
-.empty-summary-panel .summary-metrics div { min-height: 62px; padding: 7px 10px; font-size: 0.82rem; }
+.empty-summary-panel .summary-metrics .metric-card { min-height: 62px; padding: 7px 10px; font-size: 0.82rem; }
 .empty-summary-panel .summary-metrics strong { font-size: 1rem; }
 .empty-summary-panel .summary-footer { margin-top: clamp(12px, 2dvh, 20px); }
 .empty-summary-panel .summary-footer button { min-width: min(100%, 300px); padding: 6px 18px; }
-.venn-section { display: flex; min-height: 180px; flex-direction: column; }
-.venn-title { margin: 8px 0 0; font-size: 0.82rem; font-weight: 700; text-transform: uppercase; }
-.venn-diagram { position: relative; width: 260px; height: 145px; margin: 0 auto; }
-.venn-circle { position: absolute; top: 14px; display: flex; width: 132px; height: 132px; flex-direction: column; align-items: center; justify-content: center; border: 2px solid; border-radius: 50%; }
-.venn-circle strong { font-size: 1.25rem; }
-.venn-circle span, .venn-shared span { font-size: 0.7rem; }
-.venn-a { left: 16px; padding-right: 28px; border-color: #ff9a56; background: rgb(255 210 180 / 78%); }
-.venn-b { right: 16px; padding-left: 28px; border-color: #5ccfc6; background: rgb(174 244 238 / 78%); }
-.venn-shared { position: absolute; z-index: 2; top: 54px; left: 50%; display: flex; width: 58px; flex-direction: column; align-items: center; transform: translateX(-50%); }
-.direct-relation { display: flex; justify-content: space-between; gap: 12px; margin: 4px 0 0; color: #34535e; font-size: 0.85rem; }
-.direct-relation small { white-space: nowrap; }
+.comparison-detail { display: grid; min-height: 230px; grid-template-columns: minmax(340px, 0.82fr) minmax(360px, 1.18fr); align-items: center; gap: clamp(18px, 2.5vw, 42px); padding: 8px 0 12px; }
+.venn-section { display: flex; min-width: 0; flex-direction: column; }
+.venn-title { margin: 8px 0 0; color: #092f3d; font-size: 0.84rem; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; }
+.venn-diagram { --venn-circle-size: clamp(132px, 11vw, 190px); position: relative; width: clamp(240px, 20vw, 340px); height: clamp(150px, 13vw, 205px); margin: 0 auto; }
+.venn-circle { position: absolute; top: 6px; display: flex; width: var(--venn-circle-size); height: var(--venn-circle-size); flex-direction: column; align-items: center; justify-content: center; border: 3px solid; border-radius: 50%; color: #092f3d; }
+.venn-circle strong { font-size: clamp(1.35rem, 1.6vw, 1.7rem); font-weight: 800; }
+.venn-circle span, .venn-shared span { color: #173f4c; font-size: clamp(0.72rem, 0.78vw, 0.82rem); font-weight: 700; }
+.venn-a { left: 0; padding-right: clamp(24px, 2.6vw, 44px); border-color: #f17800; background: rgb(255 148 31 / 48%); }
+.venn-b { right: 0; padding-left: clamp(24px, 2.6vw, 44px); border-color: #008f95; background: rgb(32 201 195 / 48%); }
+.venn-shared { position: absolute; z-index: 2; top: 50%; left: 50%; display: flex; width: clamp(58px, 4.7vw, 76px); aspect-ratio: 1; flex-direction: column; align-items: center; justify-content: center; border: 2px solid rgb(91 73 173 / 82%); border-radius: 50%; background: rgb(122 104 207 / 88%); color: #fff; transform: translate(-50%, -50%); }
+.venn-shared strong { font-size: clamp(1.1rem, 1.25vw, 1.35rem); font-weight: 800; }
+.venn-shared span { color: #fff; }
+.venn-diagram.disjoint { width: min(100%, 410px); }
+.venn-diagram.disjoint .venn-circle { width: min(var(--venn-circle-size), 44%); height: auto; aspect-ratio: 1; }
+.venn-diagram.disjoint .venn-a { left: 0; padding-right: 0; }
+.venn-diagram.disjoint .venn-b { right: 0; padding-left: 0; }
+.biological-interpretation { display: flex; min-width: 0; min-height: 160px; flex-direction: column; justify-content: flex-start; margin-top: 0; border-left: 4px solid #176b83; padding: 0 0 10px 22px; }
+.biological-interpretation p { margin: 0 0 10px; color: #176b83; font-size: 0.8rem; font-weight: 800; letter-spacing: 0.025em; text-transform: uppercase; }
+.biological-interpretation h2 { margin: 0 0 9px; color: #092f3d; font-size: clamp(1.25rem, 1.55vw, 1.55rem); font-weight: 800; }
+.biological-interpretation.no-shared-neighbors h2 { font-size: clamp(1.05rem, 1.25vw, 1.25rem); }
+.biological-interpretation span { max-width: 760px; color: #173f4c; font-size: 0.96rem; font-weight: 500; line-height: 1.5; }
+.summary-bottom { display: flex; align-self: end; align-items: center; justify-content: space-between; gap: 16px; width: 100%; margin-top: 6px; border-top: 1px solid rgb(255 255 255 / 42%); padding-top: 10px; }
+.direct-relation { flex: 1; margin: 0; color: #34535e; font-size: 0.85rem; }
+.technical-details { position: relative; flex: none; color: #164c5c; font-size: 0.76rem; }
+.technical-details summary { cursor: pointer; font-weight: 800; }
+.technical-details > div { position: absolute; z-index: 4; right: 0; bottom: calc(100% + 6px); display: grid; min-width: 170px; gap: 4px; padding: 9px 12px; border: 1px solid #8aafbb; border-radius: 10px; background: #e7f8fb; box-shadow: 0 5px 14px rgb(12 76 103 / 20%); }
 .summary-footer { display: flex; align-items: end; justify-content: flex-end; gap: 16px; margin-top: clamp(10px, 2dvh, 22px); }
+.summary-bottom .summary-footer { flex: none; margin-top: 0; }
 .summary-footer button { display: inline-flex; min-width: min(100%, 340px); align-items: center; justify-content: center; gap: 9px; padding: 8px 22px; }
 .summary-footer button svg { width: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .subgraph-panel { position: relative; display: flex; flex-direction: column; overflow: hidden; }
@@ -508,6 +612,15 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .expanded-warning-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .expanded-warning-actions button { border: 1px solid #8aafbb; border-radius: 999px; padding: 8px 16px; background: #f5fcff; color: #164c5c; cursor: pointer; font: inherit; }
 .expanded-warning-actions button:last-child { background: linear-gradient(#28758b, #134a61); color: white; }
+.shared-neighbors-dialog { width: min(470px, calc(100% - 32px)); max-height: min(620px, calc(100dvh - 40px)); padding: 0; border: 1px solid #8aafbb; border-radius: 18px; background: #e4f7fb; color: #12333f; box-shadow: 0 12px 36px rgb(12 76 103 / 30%); }
+.shared-neighbors-dialog::backdrop { background: rgb(18 51 63 / 55%); backdrop-filter: blur(2px); }
+.shared-neighbors-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 12px; border-bottom: 1px solid rgb(22 107 131 / 22%); }
+.shared-neighbors-dialog h2 { margin: 0; font-size: 1.2rem; }
+.shared-neighbors-dialog header p { margin: 3px 0 0; color: #34535e; font-size: 0.82rem; }
+.shared-neighbors-dialog header button { display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 50%; background: rgb(22 86 109 / 12%); color: #164c5c; cursor: pointer; font: inherit; font-size: 1.3rem; }
+.shared-neighbors-dialog ul { display: grid; max-height: 430px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 7px; margin: 0; padding: 14px 20px 20px; overflow-y: auto; list-style: none; }
+.shared-neighbors-dialog li { border: 1px solid rgb(138 175 187 / 55%); border-radius: 9px; padding: 7px 10px; background: rgb(255 255 255 / 45%); font-size: 0.82rem; }
+.empty-shared-list { margin: 0; padding: 22px 20px; color: #34535e; }
 .graph-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 14px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }
 .graph-toolbar button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 8px; padding: 0; background: transparent; color: #154858; }
 .graph-toolbar button:disabled { cursor: not-allowed; opacity: 0.5; }
@@ -529,10 +642,11 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .legend-dot { display: inline-block; width: 12px; height: 12px; border: 1px solid rgb(255 255 255 / 85%); border-radius: 50%; box-shadow: 0 0 0 1px rgb(22 76 92 / 18%); }
 .protein-a-color { background: #ff941f; }
 .protein-b-color { background: #20c9c3; }
-.shared-comparison-color { background: #78dc68; }
-.shared-expanded-color { background: #7a68cf; }
+.shared-color { background: #7a68cf; }
 .exclusive-color { background: #83cfee; }
 .legend-line { display: inline-block; width: 22px; height: 4px; border-radius: 999px; background: #ff941f; }
+.legend-line.network-edge { height: 3px; background: #176978; }
+.legend-line.mst-edge { background: #176978; }
 .selected-node-details { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-top: 8px; padding: 9px 12px; border: 1px solid rgb(255 255 255 / 55%); border-radius: 12px; background: rgb(237 250 255 / 60%); color: #164c5c; }
 .selected-node-details > div { display: flex; flex-wrap: wrap; gap: 5px 16px; align-items: center; }
 .selected-node-details strong { color: #12333f; }
@@ -542,20 +656,83 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .subgraph-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: clamp(7px, 1dvh, 11px); }
 .subgraph-footer button { flex: none; min-width: min(100%, 180px); padding: 8px 22px; }
 
-@media (max-width: 760px) {
+@container (max-width: 760px) {
+  .summary-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary-metrics > div:last-child { grid-column: 1 / -1; }
+  .comparison-detail { min-height: 0; grid-template-columns: 1fr; }
+  .biological-interpretation { margin-top: 0; }
+}
+
+@container (max-width: 470px) {
+  .component-banner { align-items: flex-start; }
+  .summary-metrics { grid-template-columns: 1fr; }
+  .summary-metrics > div:last-child { grid-column: auto; }
+}
+
+@media (max-width: 900px) {
   .comparison-inputs { grid-template-columns: 1fr 1fr; }
   .compare-button { grid-column: 1 / -1; }
-  .compare-grid { grid-template-columns: 1fr; overflow: visible; }
+  .compare-grid { flex: none; min-height: auto; grid-template-columns: 1fr; overflow: visible; }
   .protein-column { grid-template-columns: 1fr 1fr; grid-template-rows: none; }
-  .summary-panel { min-height: 430px; }
+  .summary-panel { height: auto; }
+  .subgraph-panel { min-height: 500px; }
   .subgraph-heading { align-items: stretch; flex-direction: column; }
   .graph-toolbar { align-self: flex-end; }
   .graph-legend { gap: 6px 10px; font-size: 0.72rem; }
   .mst-comparison-grid { min-height: 520px; grid-template-columns: 1fr; grid-template-rows: repeat(2, minmax(250px, 1fr)); }
 }
 
+@media (min-width: 901px) and (max-width: 1100px) {
+  .compare-grid { grid-template-columns: minmax(205px, 0.58fr) minmax(0, 2.6fr); }
+  .comparison-detail { min-height: 180px; grid-template-columns: minmax(240px, 0.8fr) minmax(270px, 1.2fr); gap: 12px; }
+  .biological-interpretation { margin-top: 0; padding-left: 14px; }
+}
+
+@media (max-height: 760px) and (min-width: 901px) {
+  .compare { padding-top: 2px; }
+  .compare-header { gap: 3px; margin-bottom: 4px; }
+  .comparison-inputs input, .compare-button { min-height: 42px; }
+  .compare-grid { flex: 1; min-height: 0; }
+  .protein-column { min-height: 0; }
+  .protein-card { padding-block: 8px; }
+  .protein-card dl div { padding-block: 2px; }
+  .summary-panel { height: 100%; min-height: 0; grid-template-rows: auto auto auto minmax(155px, 1fr) auto; padding-block: 9px; }
+  .empty-summary-panel { grid-template-rows: auto minmax(130px, 1fr) auto auto; }
+  .component-banner { min-height: 56px; padding-block: 8px; }
+  .summary-metrics .metric-card { min-height: 64px; padding-block: 7px; }
+  .subgraph-panel { min-height: 0; }
+  .comparison-detail { min-height: 0; padding-block: 3px 5px; }
+  .venn-title { margin-top: 4px; }
+  .venn-diagram { --venn-circle-size: clamp(116px, 10vw, 155px); width: clamp(220px, 19vw, 290px); height: clamp(128px, 11vw, 165px); }
+  .biological-interpretation { min-height: 132px; }
+  .biological-interpretation { margin-top: 0; }
+  .summary-bottom { margin-top: 2px; padding-top: 6px; }
+  .summary-footer button { min-height: 32px; padding-block: 5px; }
+}
+
+/* At very high browser zoom there is not enough vertical space to compress
+   every block safely. Keep the content readable and let the page scroll. */
+@media (max-width: 1200px) and (max-height: 650px) {
+  .compare { flex: none; min-height: auto; }
+  .compare-grid { flex: none; min-height: auto; align-items: start; }
+  .protein-column { min-height: 0; grid-template-rows: auto auto; }
+  .protein-card { min-height: 210px; }
+  .summary-panel {
+    height: auto;
+    min-height: 590px;
+    grid-template-rows: auto auto auto auto auto;
+  }
+  .empty-summary-panel { grid-template-rows: auto minmax(230px, 1fr) auto auto; }
+  .comparison-detail { min-height: 190px; }
+}
+
 @media (max-width: 520px) {
   .comparison-inputs, .protein-column, .summary-metrics { grid-template-columns: 1fr; }
+  .comparison-detail { grid-template-columns: 1fr; }
+  .venn-title { text-align: center; }
+  .biological-interpretation { margin-top: 0; }
+  .summary-bottom { align-items: stretch; flex-direction: column; }
+  .summary-bottom .summary-footer button { width: 100%; }
   .summary-footer { align-items: stretch; flex-direction: column; }
   .summary-footer button { min-width: 0; width: 100%; }
   .subgraph-footer { align-items: stretch; flex-direction: column; }

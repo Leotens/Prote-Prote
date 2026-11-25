@@ -16,12 +16,71 @@ from pyvis.network import Network
 
 app = FastAPI(title="Prote-Prote API")
 
+COMPARISON_COLORS = {
+    "protein_a": "#ff941f",
+    "protein_b": "#20c9c3",
+    "shared": "#7a68cf",
+    "exclusive": "#83cfee",
+    "direct_edge": "#ff941f",
+    "mst_edge": "#176978",
+    "edge": "#176978",
+}
+
 PROTEIN_SELECTION_SCRIPT = """
 <script>
   network.on('selectNode', function (event) {
     const node = nodes.get(event.nodes[0]);
     if (node && node.protein_details) {
       window.parent.postMessage({ type: 'prote-prote:protein-selected', details: node.protein_details }, '*');
+    }
+  });
+</script>
+"""
+
+EXPANDED_GRAPH_FOCUS_SCRIPT = """
+<script>
+  const originalExpandedEdges = {};
+  edges.get().forEach(function (edge) {
+    originalExpandedEdges[edge.id] = { color: edge.color, width: edge.width };
+  });
+
+  function restoreExpandedGraph() {
+    nodes.update(nodes.getIds().map(function (id) { return { id: id, opacity: 1 }; }));
+    edges.update(edges.getIds().map(function (id) {
+      const original = originalExpandedEdges[id] || {};
+      return { id: id, color: original.color || '#176978', width: original.width || 1 };
+    }));
+    network.unselectAll();
+    network.redraw();
+  }
+
+  function focusExpandedNode(nodeId) {
+    const connectedEdges = new Set(network.getConnectedEdges(nodeId));
+    const connectedNodes = new Set([nodeId, ...network.getConnectedNodes(nodeId)]);
+    nodes.update(nodes.getIds().map(function (id) {
+      return { id: id, opacity: connectedNodes.has(id) ? 1 : 0.1 };
+    }));
+    edges.update(edges.getIds().map(function (id) {
+      const original = originalExpandedEdges[id] || {};
+      return connectedEdges.has(id)
+        ? { id: id, color: original.color || '#176978', width: Math.max(Number(original.width) || 1, 2.6) }
+        : { id: id, color: 'rgba(23,105,120,0.06)', width: 0.4 };
+    }));
+    network.redraw();
+  }
+
+  network.on('selectNode', function (event) {
+    if (event.nodes.length) focusExpandedNode(event.nodes[0]);
+  });
+  network.on('click', function (event) {
+    if (!event.nodes.length) {
+      restoreExpandedGraph();
+      window.parent.postMessage({ type: 'prote-prote:protein-cleared' }, '*');
+    }
+  });
+  window.addEventListener('message', function (event) {
+    if (event.source === window.parent && event.data && event.data.type === 'prote-prote:graph-control' && event.data.action === 'reset-focus') {
+      restoreExpandedGraph();
     }
   });
 </script>
@@ -186,9 +245,13 @@ def compare_dataset_proteins(
         result[f"protein_{side}"]["component_id"] = ufds_result[f"protein_{side}"]["component_id"]
         graph = result[f"graph_{side}"]
         center = result[f"protein_{side}"]["id"]
-        colors = {node: "#9be775" for node in result["shared_neighbors"]}
-        colors[center] = "#1550bd" if side == "a" else "#0bc5c7"
-        html = render_subgraph_html(graph["nodes"], graph["edges"], center, highlights=colors)
+        colors = {node: COMPARISON_COLORS["shared"] for node in result["shared_neighbors"]}
+        colors[center] = COMPARISON_COLORS[f"protein_{side}"]
+        html = render_subgraph_html(
+            graph["nodes"], graph["edges"], center,
+            highlights=colors, default_color=COMPARISON_COLORS["exclusive"],
+            edge_color=COMPARISON_COLORS["mst_edge"],
+        )
         graph["html"] = html.body.decode("utf-8")
     result["elapsed_ms"] = (perf_counter() - started) * 1000
     return result
@@ -430,15 +493,15 @@ def generate_subgraph(
     return html
 
 
-def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str, details: dict | None = None, highlights: dict[str, str] | None = None) -> HTMLResponse:
+def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str, details: dict | None = None, highlights: dict[str, str] | None = None, default_color: str = "#ff8539", edge_color: str | None = None) -> HTMLResponse:
     net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
     net.set_options('{"physics":{"stabilization":{"iterations":35,"updateInterval":10}}}')
     for node in nodes:
         is_origin = node == origin
-        color = (highlights or {}).get(node, "#1550bd" if is_origin else "#ff8539")
+        color = (highlights or {}).get(node, "#1550bd" if is_origin else default_color)
         net.add_node(node, label=node, color=color, title=f"Proteína de origen: {node}" if is_origin else node, size=32 if is_origin or node in (highlights or {}) else 22, protein_details=details.get(node) if details else None)
     for source, target in edges:
-        net.add_edge(source, target)
+        net.add_edge(source, target, color=edge_color) if edge_color else net.add_edge(source, target)
 
     styles = """
     <style>
@@ -515,16 +578,22 @@ def render_expanded_comparison_html(
     net.set_options('{"physics":{"stabilization":{"iterations":100,"updateInterval":25}}}')
     for node in nodes:
         if node == protein_a:
-            color, size, title = "#ff8539", 34, f"Proteína A: {node}"
+            color, size, title = COMPARISON_COLORS["protein_a"], 34, f"Proteína A: {node}"
         elif node == protein_b:
-            color, size, title = "#22bfc7", 34, f"Proteína B: {node}"
+            color, size, title = COMPARISON_COLORS["protein_b"], 34, f"Proteína B: {node}"
         elif node in shared_neighbors:
-            color, size, title = "#7a68cf", 25, f"Vecino compartido: {node}"
+            color, size, title = COMPARISON_COLORS["shared"], 25, f"Vecino compartido: {node}"
         else:
-            color, size, title = "#8ecdd8", 19, node
+            color, size, title = COMPARISON_COLORS["exclusive"], 19, node
         net.add_node(node, label=node, color=color, size=size, title=title, protein_details=details[node])
     for source, target in edges:
-        net.add_edge(source, target)
+        direct = {source, target} == {protein_a, protein_b}
+        net.add_edge(
+            source, target,
+            color=COMPARISON_COLORS["direct_edge"] if direct else COMPARISON_COLORS["edge"],
+            width=5 if direct else 1,
+            title="Asociación directa" if direct else None,
+        )
 
     styles = """
     <style>
@@ -553,7 +622,7 @@ def render_expanded_comparison_html(
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
-    return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + GRAPH_CONTROL_SCRIPT + closing_tag + tail)
+    return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + EXPANDED_GRAPH_FOCUS_SCRIPT + GRAPH_CONTROL_SCRIPT + closing_tag + tail)
 
 
 def build_comparison_layout(
@@ -589,12 +658,33 @@ def render_structured_comparison_html(
 ) -> HTMLResponse:
     layout = build_comparison_layout(proteins, protein_a, protein_b)
     net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
-    net.set_options('{"physics":{"enabled":false},"interaction":{"hover":true,"navigationButtons":false}}')
+    net.set_options(
+        '{"physics":{"enabled":false},"interaction":{"hover":true,"navigationButtons":false},'
+        '"edges":{"smooth":{"enabled":true,"type":"continuous","roundness":0.12}}}'
+    )
 
-    net.add_node(protein_a, label=protein_a, color="#ff941f", size=42, x=-380, y=0,
-                 fixed={"x": True, "y": True}, title=f"Proteína A: {protein_a}", protein_details=details[protein_a])
-    net.add_node(protein_b, label=protein_b, color="#20c9c3", size=42, x=380, y=0,
-                 fixed={"x": True, "y": True}, title=f"Proteína B: {protein_b}", protein_details=details[protein_b])
+    def depth_color(key: str, border: str) -> dict:
+        background = COMPARISON_COLORS[key]
+        return {
+            "background": background,
+            "border": border,
+            "highlight": {"background": background, "border": "#ffffff"},
+            "hover": {"background": background, "border": "#ffffff"},
+        }
+
+    center_shadow = {"enabled": True, "color": "rgba(9,47,61,0.30)", "size": 16, "x": 4, "y": 6}
+    neighbor_shadow = {"enabled": True, "color": "rgba(9,47,61,0.22)", "size": 10, "x": 3, "y": 4}
+    color_a = depth_color("protein_a", "#c96800")
+    color_b = depth_color("protein_b", "#007f83")
+    color_shared = depth_color("shared", "#5543ae")
+    color_exclusive = depth_color("exclusive", "#3a93b8")
+
+    net.add_node(protein_a, label=protein_a, color=color_a, size=42, x=-380, y=0,
+                 borderWidth=3, shadow=center_shadow, fixed={"x": True, "y": True},
+                 title=f"Proteína A: {protein_a}", protein_details=details[protein_a])
+    net.add_node(protein_b, label=protein_b, color=color_b, size=42, x=380, y=0,
+                 borderWidth=3, shadow=center_shadow, fixed={"x": True, "y": True},
+                 title=f"Proteína B: {protein_b}", protein_details=details[protein_b])
 
     visible_a = layout["visible_a"]
     visible_b = layout["visible_b"]
@@ -602,24 +692,27 @@ def render_structured_comparison_html(
     for index, node in enumerate(visible_a):
         angle = 2.0 + (2.25 * index / max(1, len(visible_a) - 1))
         x, y = -380 + 190 * cos(angle), 190 * sin(angle)
-        net.add_node(node, label=node, color="#83cfee", size=20, x=x, y=y,
-                     fixed={"x": True, "y": True}, title=f"Vecino exclusivo de A: {node}", protein_details=details[node])
+        net.add_node(node, label=node, color=color_exclusive, size=20, x=x, y=y,
+                     borderWidth=2, shadow=neighbor_shadow, fixed={"x": True, "y": True},
+                     title=f"Vecino exclusivo de A: {node}", protein_details=details[node])
         net.add_edge(protein_a, node, color="#176978", width=1.4)
     for index, node in enumerate(visible_b):
         angle = -1.12 + (2.24 * index / max(1, len(visible_b) - 1))
         x, y = 380 + 190 * cos(angle), 190 * sin(angle)
-        net.add_node(node, label=node, color="#83cfee", size=20, x=x, y=y,
-                     fixed={"x": True, "y": True}, title=f"Vecino exclusivo de B: {node}", protein_details=details[node])
+        net.add_node(node, label=node, color=color_exclusive, size=20, x=x, y=y,
+                     borderWidth=2, shadow=neighbor_shadow, fixed={"x": True, "y": True},
+                     title=f"Vecino exclusivo de B: {node}", protein_details=details[node])
         net.add_edge(protein_b, node, color="#176978", width=1.4)
     for index, node in enumerate(visible_shared):
         y = -150 + (300 * index / max(1, len(visible_shared) - 1))
-        net.add_node(node, label=node, color="#78dc68", size=23, x=0, y=y,
-                     fixed={"x": True, "y": True}, title=f"Vecino compartido: {node}", protein_details=details[node])
+        net.add_node(node, label=node, color=color_shared, size=23, x=0, y=y,
+                     borderWidth=2, shadow=neighbor_shadow, fixed={"x": True, "y": True},
+                     title=f"Vecino compartido: {node}", protein_details=details[node])
         net.add_edge(protein_a, node, color="#176978", width=1.8)
         net.add_edge(protein_b, node, color="#176978", width=1.8)
 
     if protein_b in set(proteins[protein_a]):
-        net.add_edge(protein_a, protein_b, color="#ff941f", width=5, title="Asociación directa")
+        net.add_edge(protein_a, protein_b, color=COMPARISON_COLORS["direct_edge"], width=5, title="Asociación directa")
 
     badges = [
         ("__more_a__", len(layout["exclusive_a"]) - len(visible_a), -380, 245, "exclusivos A"),
@@ -666,10 +759,10 @@ def render_comparison_image(
     graph.add_edges_from(edges)
     positions = nx.spring_layout(graph, seed=42, k=0.20, iterations=50)
     colors = [
-        "#ff8539" if node == protein_a else
-        "#22bfc7" if node == protein_b else
-        "#7a68cf" if node in shared_neighbors else
-        "#8ecdd8"
+        COMPARISON_COLORS["protein_a"] if node == protein_a else
+        COMPARISON_COLORS["protein_b"] if node == protein_b else
+        COMPARISON_COLORS["shared"] if node in shared_neighbors else
+        COMPARISON_COLORS["exclusive"]
         for node in nodes
     ]
     sizes = [600 if node in (protein_a, protein_b) else 220 for node in nodes]
@@ -715,17 +808,17 @@ def render_structured_comparison_image(
         axes.plot(*zip(positions[protein_a], positions[node]), color="#176978", linewidth=1.4)
         axes.plot(*zip(positions[protein_b], positions[node]), color="#176978", linewidth=1.4)
     if protein_b in set(proteins[protein_a]):
-        axes.plot(*zip(positions[protein_a], positions[protein_b]), color="#ff941f", linewidth=4)
+        axes.plot(*zip(positions[protein_a], positions[protein_b]), color=COMPARISON_COLORS["direct_edge"], linewidth=4)
 
     for node, (x, y) in positions.items():
         if node == protein_a:
-            color, size = "#ff941f", 2100
+            color, size = COMPARISON_COLORS["protein_a"], 2100
         elif node == protein_b:
-            color, size = "#20c9c3", 2100
+            color, size = COMPARISON_COLORS["protein_b"], 2100
         elif node in layout["visible_shared"]:
-            color, size = "#78dc68", 800
+            color, size = COMPARISON_COLORS["shared"], 800
         else:
-            color, size = "#83cfee", 620
+            color, size = COMPARISON_COLORS["exclusive"], 620
         axes.scatter(x, y, s=size, c=color, edgecolors="white", linewidths=1.6, zorder=3)
         axes.text(x, y, node, ha="center", va="center", fontsize=8 if size < 2000 else 12, color="#12333f", zorder=4)
 
@@ -965,9 +1058,13 @@ def compare_dataset_proteins_mst(
     for side in ("a", "b"):
         graph = result[f"graph_{side}"]
         center = result[f"protein_{side}"]["id"]
-        colors = {node: "#9be775" for node in result["shared_neighbors"]}
-        colors[center] = "#1550bd" if side == "a" else "#0bc5c7"
-        html = render_subgraph_html(graph["nodes"], graph["edges"], center, highlights=colors)
+        colors = {node: COMPARISON_COLORS["shared"] for node in result["shared_neighbors"]}
+        colors[center] = COMPARISON_COLORS[f"protein_{side}"]
+        html = render_subgraph_html(
+            graph["nodes"], graph["edges"], center,
+            highlights=colors, default_color=COMPARISON_COLORS["exclusive"],
+            edge_color=COMPARISON_COLORS["mst_edge"],
+        )
         graph["html"] = html.body.decode("utf-8")
     return result
 

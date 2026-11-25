@@ -91,7 +91,7 @@ class ComparisonTests(unittest.TestCase):
         content = "\n".join(f"{a},{b}" for a, b in rows).encode()
         file = UploadFile(filename="test.csv", file=BytesIO(content))
         result = compare_dataset_proteins(file, False, "A", "B")
-        for side, count, edge_count, center, color in [("a", 51, 50, "A", "#1550bd"), ("b", 21, 20, "B", "#0bc5c7")]:
+        for side, count, edge_count, center, color in [("a", 51, 50, "A", "#ff941f"), ("b", 21, 20, "B", "#20c9c3")]:
             with self.subTest(side=side):
                 graph = result[f"graph_{side}"]
                 html = graph["html"]
@@ -103,9 +103,9 @@ class ComparisonTests(unittest.TestCase):
                 colors = {node["id"]: node["color"] for node in nodes}
                 self.assertEqual(colors[center], color)
                 for index in range(20):
-                    self.assertEqual(colors[f"S{index}"], "#9be775")
+                    self.assertEqual(colors[f"S{index}"], "#7a68cf")
                 if side == "a":
-                    self.assertEqual(colors["E29"], "#ff8539")
+                    self.assertEqual(colors["E29"], "#83cfee")
                     self.assertNotIn({"E29", "S19"}, [{edge["from"], edge["to"]} for edge in edges])
                 else:
                     self.assertNotIn("E29", colors)

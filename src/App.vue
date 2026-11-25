@@ -37,7 +37,11 @@ watchEffect(() => {
   <main class="menu-page">
     <AppHeader :title="route.meta.title ?? 'Bienvenido de vuelta'" @home="goHome" />
 
-    <div :key="route.name" class="screen">
+    <div
+      :key="route.name"
+      class="screen"
+      :class="{ 'compare-screen': route.name === 'compare' }"
+    >
       <p v-if="loadingDatasets" role="status">Recuperando datasets…</p>
       <p v-else-if="storageError" role="alert">{{ storageError }}</p>
       <RouterView v-else v-slot="{ Component, route: viewRoute }">
@@ -91,5 +95,17 @@ watchEffect(() => {
   min-height: 0;
   flex-direction: column;
   overflow: auto;
+}
+
+.compare-screen {
+  scrollbar-color: rgb(64 112 124 / 72%) transparent;
+  scrollbar-width: thin;
+}
+
+.compare-screen::-webkit-scrollbar { width: 8px; }
+.compare-screen::-webkit-scrollbar-track { background: transparent; }
+.compare-screen::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgb(64 112 124 / 72%);
 }
 </style>

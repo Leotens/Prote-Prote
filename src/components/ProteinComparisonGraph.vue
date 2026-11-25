@@ -104,7 +104,7 @@ onBeforeUnmount(() => {
 .comparison-graph { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; align-items: center; }
 .comparison-graph:fullscreen { padding: 20px; background: #a5d6da; }
 .graph-header { position: absolute; z-index: 2; inset: 10px 12px auto; display: flex; align-items: center; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; pointer-events: none; }
-h2 { margin: 0; font-size: clamp(1.1rem, 1.5vw, 1.6rem); text-align: left; overflow-wrap: anywhere; }
+h2 { margin: 0; font-size: clamp(0.95rem, 1.15vw, 1.25rem); text-align: left; overflow-wrap: anywhere; }
 .graph-tools { display: flex; flex: none; max-width: 100%; gap: 4px; padding: 4px 10px; border-radius: 12px; background: #d5eef080; pointer-events: auto; }
 button { display: grid; place-items: center; width: 36px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: #154858; cursor: pointer; }
 button:hover { background: #d5eef0; }
