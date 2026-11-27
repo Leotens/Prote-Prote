@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ComparisonGraph } from '../infrastructure/datasetsApi'
 
 const props = defineProps<{ graph: ComparisonGraph, proteinId: string, side: 'A' | 'B' }>()
+const emit = defineEmits<{ ready: [side: 'A' | 'B'], fullscreen: [] }>()
 const frame = ref<HTMLIFrameElement | null>(null)
 const stage = ref<HTMLDivElement | null>(null)
 const ready = ref(false)
@@ -44,6 +45,7 @@ function onMessage(event: MessageEvent) {
   if (event.source !== frame.value?.contentWindow) return
   if (event.data === 'prote-prote:graph-ready') {
     ready.value = true
+    emit('ready', props.side)
     fitGraph(true)
   }
   if (event.data?.type === 'prote-prote:graph-image' && typeof event.data.image === 'string' && event.data.image.startsWith('data:image/png;base64,')) {
@@ -56,14 +58,8 @@ function onMessage(event: MessageEvent) {
   }
 }
 
-async function fullscreen() {
-  try {
-    error.value = ''
-    if (document.fullscreenElement === stage.value) await document.exitFullscreen()
-    else await stage.value?.requestFullscreen()
-  } catch {
-    error.value = 'No se pudo abrir la pantalla completa en este navegador.'
-  }
+function fullscreen() {
+  emit('fullscreen')
 }
 
 onMounted(() => {
@@ -83,11 +79,12 @@ onBeforeUnmount(() => {
     <header class="graph-header">
     <h2>Proteína {{ side }}</h2>
     <div class="graph-tools" :aria-label="`Herramientas del subgrafo ${side}`">
-      <button type="button" aria-label="Acercar" :disabled="!ready" @click="control('zoom-in')"><svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M10 7v6M7 10h6"/></svg></button>
-      <button type="button" aria-label="Alejar" :disabled="!ready" @click="control('zoom-out')"><svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M7 10h6"/></svg></button>
-      <button type="button" aria-label="Centrar grafo" title="Centrar grafo" :disabled="!ready" @click="control('fit')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg></button>
-      <button type="button" aria-label="Pantalla completa" @click="fullscreen"><svg viewBox="0 0 24 24"><path d="M3 9V3h6m6 0h6v6M3 15v6h6m6 0h6v-6"/></svg></button>
-      <button type="button" aria-label="Descargar subgrafo como PNG" :disabled="!ready" @click="control('download')"><svg viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg></button>
+      <button type="button" aria-label="Acercar" title="Acercar" :disabled="!ready" @click="control('zoom-in')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7v7M7 10.5h7"/></svg></button>
+      <button type="button" aria-label="Alejar" title="Alejar" :disabled="!ready" @click="control('zoom-out')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7 10.5h7"/></svg></button>
+      <button type="button" aria-label="Centrar grafo" title="Centrar grafo" :disabled="!ready" @click="control('fit')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg></button>
+      <span class="toolbar-divider"></span>
+      <button type="button" aria-label="Pantalla completa" title="Pantalla completa" @click="fullscreen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg></button>
+      <button type="button" aria-label="Descargar subgrafo como PNG" title="Descargar subgrafo como PNG" :disabled="!ready" @click="control('download')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg></button>
     </div>
     </header>
     <p v-if="error" role="alert">{{ error }}</p>
@@ -105,12 +102,17 @@ onBeforeUnmount(() => {
 .comparison-graph:fullscreen { padding: 20px; background: #a5d6da; }
 .graph-header { position: absolute; z-index: 2; inset: 10px 12px auto; display: flex; align-items: center; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; pointer-events: none; }
 h2 { margin: 0; font-size: clamp(0.95rem, 1.15vw, 1.25rem); text-align: left; overflow-wrap: anywhere; }
-.graph-tools { display: flex; flex: none; max-width: 100%; gap: 4px; padding: 4px 10px; border-radius: 12px; background: #d5eef080; pointer-events: auto; }
-button { display: grid; place-items: center; width: 36px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: #154858; cursor: pointer; }
-button:hover { background: #d5eef0; }
-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.graph-tools { display: flex; flex: none; max-width: 100%; align-items: center; gap: 3px; padding: 3px 6px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 12px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); pointer-events: auto; }
+button { display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 7px; padding: 0; background: transparent; color: #154858; cursor: pointer; }
+button:not(:disabled):hover { background: rgb(213 238 240 / 75%); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
 button:focus-visible { outline: 2px solid #08485d; outline-offset: 2px; }
-button svg { width: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+button svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; }
+.toolbar-divider { width: 1px; height: 20px; margin: 0 2px; background: #8aafbb; }
+.comparison-graph:fullscreen .graph-tools { gap: 4px; padding: 4px 8px; border-radius: 14px; }
+.comparison-graph:fullscreen button { width: 36px; height: 36px; border-radius: 8px; }
+.comparison-graph:fullscreen button svg { width: 22px; height: 22px; }
+.comparison-graph:fullscreen .toolbar-divider { height: 24px; margin-inline: 3px; }
 .graph-stage { position: relative; flex: 1; min-height: 0; width: 100%; overflow: hidden; border: 1px solid #ccebef99; border-radius: 18px; background: #d5eef018; }
 iframe { position: absolute; inset: 0; display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: transparent; }
 .pending { visibility: hidden; }
@@ -118,6 +120,6 @@ iframe { position: absolute; inset: 0; display: block; width: 100%; height: 100%
 .graph-loading img { width: 110px; }
 @media (max-width: 420px) {
   .graph-tools { margin-left: auto; gap: 2px; padding-inline: 4px; }
-  button { width: 30px; }
+  button { width: 30px; height: 30px; }
 }
 </style>

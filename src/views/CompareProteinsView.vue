@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import BackToMenu from '../components/BackToMenu.vue'
+import GeneAnnotationSummary from '../components/GeneAnnotationSummary.vue'
 import ProteinComparisonGraph from '../components/ProteinComparisonGraph.vue'
 import ProteinSelector from '../components/ProteinSelector.vue'
 import { useProteinComparison } from '../composables/useProteinComparison'
@@ -18,6 +19,7 @@ const subgraphPanel = ref<HTMLElement | null>(null)
 const comparisonGraphFrame = ref<HTMLIFrameElement | null>(null)
 const isFullscreen = ref(false)
 const comparisonGraphReady = ref(false)
+const mstReadySides = ref<Set<'A' | 'B'>>(new Set())
 const selectedComparisonProtein = ref<ProteinDetails | null>(null)
 const displayMode = ref<'summary' | 'subgraph'>('summary')
 const expandedWarning = ref<HTMLDialogElement | null>(null)
@@ -53,6 +55,23 @@ const exclusiveNeighborsB = computed(() => comparisonResult.value
   ? comparisonResult.value.protein_b.neighbors.filter(neighbor => !sharedNeighborSet.value.has(neighbor)).length
   : 0)
 const hasComparisonGraph = computed(() => !!comparisonSubgraphHtml.value || !!mstComparisonResult.value)
+const graphLegendReady = computed(() => {
+  if (displayMode.value !== 'subgraph' || generatingComparisonSubgraph.value) return false
+  return comparisonGraphMode.value === 'mst'
+    ? mstReadySides.value.size === 2
+    : comparisonGraphReady.value
+})
+
+function resetGraphReadiness() {
+  comparisonGraphReady.value = false
+  mstReadySides.value = new Set()
+}
+
+function markMstGraphReady(side: 'A' | 'B') {
+  const readySides = new Set(mstReadySides.value)
+  readySides.add(side)
+  mstReadySides.value = readySides
+}
 function comparisonComponentNumber(side: 'A' | 'B') {
   if (!comparisonResult.value) return '--'
   return side === 'A' || comparisonResult.value.same_component ? 1 : 2
@@ -99,13 +118,14 @@ function selectDataset(option: Dataset) {
 
 function requestComparison() {
   displayMode.value = 'summary'
+  resetGraphReadiness()
   void compare(dataset.value, proteinA.value, proteinB.value)
 }
 
 async function requestComparisonSubgraph() {
   if (!comparisonResult.value) return
   displayMode.value = 'subgraph'
-  comparisonGraphReady.value = false
+  resetGraphReadiness()
   selectedComparisonProtein.value = null
   await generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value)
 }
@@ -117,7 +137,7 @@ function changeComparisonGraphMode(mode: 'comparison' | 'expanded' | 'mst', conf
     return
   }
   expandedWarning.value?.close()
-  comparisonGraphReady.value = false
+  resetGraphReadiness()
   selectedComparisonProtein.value = null
   void generateComparisonSubgraph(dataset.value, proteinA.value, proteinB.value, mode)
 }
@@ -210,7 +230,6 @@ function dismissPickerOnBlur(event: FocusEvent) {
     <div class="compare-grid">
       <aside class="protein-column">
         <article v-for="protein in proteinCards" :key="protein.label" class="glass-panel protein-card">
-          <span v-if="protein.details" class="protein-id">ID: {{ protein.details.id }}</span>
           <h2>Proteína {{ protein.details?.id ?? protein.label }}</h2>
           <div v-if="!protein.details" class="unselected">
             <svg viewBox="0 0 64 64" aria-hidden="true">
@@ -220,7 +239,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
             </svg>
             <span>Sin seleccionar</span>
           </div>
-          <p v-else class="selected-protein">Seleccionada</p>
+          <GeneAnnotationSummary v-if="protein.details" :id="protein.details.id" />
           <dl>
             <div><dt>Vecinos</dt><dd>{{ protein.details?.degree ?? '--' }}</dd></div>
             <div><dt>Componente</dt><dd>{{ protein.details ? comparisonComponentNumber(protein.label as 'A' | 'B') : '--' }}</dd></div>
@@ -420,11 +439,15 @@ function dismissPickerOnBlur(event: FocusEvent) {
               :graph="mstComparisonResult.graph_a"
               :protein-id="mstComparisonResult.protein_a.id"
               side="A"
+              @ready="markMstGraphReady"
+              @fullscreen="requestFullscreen"
             />
             <ProteinComparisonGraph
               :graph="mstComparisonResult.graph_b"
               :protein-id="mstComparisonResult.protein_b.id"
               side="B"
+              @ready="markMstGraphReady"
+              @fullscreen="requestFullscreen"
             />
           </div>
           <div v-else-if="comparisonSubgraphHtml" class="comparison-graph-area">
@@ -448,6 +471,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
           <aside v-if="selectedComparisonProtein" class="selected-node-details" aria-live="polite">
             <div>
               <strong>Proteína {{ selectedComparisonProtein.id }}</strong>
+              <GeneAnnotationSummary :id="selectedComparisonProtein.id" compact />
               <span>Vecinos: {{ selectedComparisonProtein.degree }}</span>
               <span>Tamaño del grupo: {{ selectedComparisonProtein.component_size }}</span>
             </div>
@@ -455,7 +479,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
           </aside>
 
           <footer class="subgraph-footer">
-            <div v-if="hasComparisonGraph" class="graph-legend" aria-label="Leyenda de colores del grafo">
+            <div v-if="graphLegendReady" class="graph-legend" aria-label="Leyenda de colores del grafo">
               <strong>Leyenda</strong>
               <span><i class="legend-dot protein-a-color"></i>Proteína A</span>
               <span><i class="legend-dot protein-b-color"></i>Proteína B</span>
@@ -467,7 +491,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
               <span v-if="comparisonGraphMode !== 'mst'">
                 <i class="legend-line network-edge"></i>Asociación con vecino
               </span>
-              <span>
+              <span v-if="comparisonGraphMode === 'mst' || comparisonResult?.directly_connected">
                 <i class="legend-line" :class="{ 'mst-edge': comparisonGraphMode === 'mst' }"></i>
                 {{ comparisonGraphMode === 'mst' ? 'Asociación con vecino' : 'Asociación directa' }}
               </span>
@@ -531,13 +555,11 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .protein-column { display: grid; min-height: 0; grid-template-rows: 1fr 1fr; gap: clamp(8px, 1dvh, 12px); }
 .protein-card { overflow-y: auto; overscroll-behavior: contain; padding: clamp(9px, 1vw, 14px); }
 .protein-card h2 { margin: 0 0 3px; font-size: clamp(1.05rem, 1.3vw, 1.35rem); }
-.protein-id { display: inline-block; margin-bottom: 5px; padding: 3px 9px; border: 1px solid rgb(255 255 255 / 65%); border-radius: 999px; background: rgb(22 86 109 / 48%); color: white; font-size: 0.72rem; }
 .unselected { display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 2px; color: #34535e; }
 .unselected svg, .empty-comparison svg { width: 48px; fill: white; stroke: white; stroke-linecap: round; stroke-width: 4; }
 .protein-card dl { margin: 0; }
 .protein-card dl div { display: flex; justify-content: space-between; gap: 6px; padding: 4px 1px; border-bottom: 1px solid rgb(43 100 104 / 20%); font-size: 0.82rem; }
 .protein-card dd { margin: 0; color: #34535e; }
-.selected-protein { margin: 3px 0; color: #16566d; font-size: 0.82rem; font-weight: 700; text-align: center; }
 .summary-panel { overflow-y: auto; overscroll-behavior: contain; container-type: inline-size; display: grid; width: 100%; height: 100%; min-height: 0; grid-template-rows: auto auto auto minmax(230px, 1fr) auto; align-self: stretch; align-content: stretch; padding: clamp(10px, 1.2vw, 18px); }
 .empty-summary-panel { height: 100%; align-self: stretch; grid-template-rows: auto minmax(130px, 1fr) auto auto; }
 .empty-comparison { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
@@ -621,11 +643,13 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .shared-neighbors-dialog ul { display: grid; max-height: 430px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 7px; margin: 0; padding: 14px 20px 20px; overflow-y: auto; list-style: none; }
 .shared-neighbors-dialog li { border: 1px solid rgb(138 175 187 / 55%); border-radius: 9px; padding: 7px 10px; background: rgb(255 255 255 / 45%); font-size: 0.82rem; }
 .empty-shared-list { margin: 0; padding: 22px 20px; color: #34535e; }
-.graph-toolbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 14px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }
-.graph-toolbar button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 8px; padding: 0; background: transparent; color: #154858; }
+.graph-toolbar { display: flex; align-items: center; gap: 3px; padding: 3px 6px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 12px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }
+.graph-toolbar button { display: grid; width: 32px; height: 32px; place-items: center; border: 0; border-radius: 7px; padding: 0; background: transparent; color: #154858; }
+.graph-toolbar button:not(:disabled):hover { background: rgb(213 238 240 / 75%); cursor: pointer; }
 .graph-toolbar button:disabled { cursor: not-allowed; opacity: 0.5; }
-.graph-toolbar svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.8; }
-.toolbar-divider { width: 1px; height: 24px; margin: 0 3px; background: #8aafbb; }
+.graph-toolbar button:focus-visible { outline: 2px solid #08485d; outline-offset: 2px; }
+.graph-toolbar svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.8; }
+.toolbar-divider { width: 1px; height: 20px; margin: 0 2px; background: #8aafbb; }
 .empty-subgraph { display: flex; min-height: 0; flex-direction: column; align-items: center; justify-content: center; padding: 12px; text-align: center; }
 .empty-subgraph img { width: clamp(80px, min(11vw, 18dvh), 145px); height: auto; margin-bottom: 12px; }
 .empty-subgraph h2 { margin: 0; font-size: clamp(1.25rem, 2vw, 2rem); }
@@ -636,10 +660,10 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .graph-loading-overlay { position: absolute; z-index: 2; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgb(181 229 237 / 82%); color: #164c5c; font-weight: 700; }
 .loading-spinner { width: 24px; height: 24px; border: 3px solid rgb(22 76 92 / 20%); border-top-color: #16566d; border-radius: 50%; animation: comparison-spin 700ms linear infinite; }
 @keyframes comparison-spin { to { transform: rotate(360deg); } }
-.graph-legend { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px 14px; padding: 6px 10px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 12px; background: rgb(237 250 255 / 35%); color: #164c5c; font-size: 0.75rem; }
-.graph-legend strong { margin-right: 2px; }
-.graph-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.legend-dot { display: inline-block; width: 12px; height: 12px; border: 1px solid rgb(255 255 255 / 85%); border-radius: 50%; box-shadow: 0 0 0 1px rgb(22 76 92 / 18%); }
+.graph-legend { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 7px 16px; padding: 8px 4px 3px; border-top: 2px solid rgb(9 47 61 / 32%); color: #042936; font-size: 0.8rem; font-weight: 900; }
+.graph-legend strong { margin-right: 0; padding-right: 16px; border-right: 2px solid rgb(6 43 57 / 58%); color: #031f2a; font-weight: 950; }
+.graph-legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.legend-dot { display: inline-block; width: 13px; height: 13px; border: 1px solid rgb(255 255 255 / 90%); border-radius: 50%; box-shadow: 0 0 0 1px rgb(9 47 61 / 25%); }
 .protein-a-color { background: #ff941f; }
 .protein-b-color { background: #20c9c3; }
 .shared-color { background: #7a68cf; }
@@ -647,12 +671,30 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .legend-line { display: inline-block; width: 22px; height: 4px; border-radius: 999px; background: #ff941f; }
 .legend-line.network-edge { height: 3px; background: #176978; }
 .legend-line.mst-edge { background: #176978; }
-.selected-node-details { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-top: 8px; padding: 9px 12px; border: 1px solid rgb(255 255 255 / 55%); border-radius: 12px; background: rgb(237 250 255 / 60%); color: #164c5c; }
-.selected-node-details > div { display: flex; flex-wrap: wrap; gap: 5px 16px; align-items: center; }
-.selected-node-details strong { color: #12333f; }
-.selected-node-details span { font-size: 0.82rem; }
-.selected-node-details button { width: 26px; height: 26px; flex: none; border: 0; border-radius: 50%; background: rgb(22 86 109 / 14%); color: #164c5c; cursor: pointer; font-size: 1.2rem; line-height: 1; }
+.selected-node-details { display: flex; align-items: center; justify-content: space-between; gap: 9px; margin-top: 5px; padding: 5px 9px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 10px; background: rgb(237 250 255 / 35%); color: #164c5c; }
+.selected-node-details > div { display: flex; min-width: 0; flex-wrap: wrap; gap: 3px 12px; align-items: center; }
+.selected-node-details strong { color: #062b39; font-size: 0.76rem; font-weight: 900; }
+.selected-node-details span { font-size: 0.76rem; }
+.selected-node-details button { width: 22px; height: 22px; flex: none; border: 0; border-radius: 50%; background: rgb(22 86 109 / 14%); color: #164c5c; cursor: pointer; font-size: 1rem; line-height: 1; }
 .summary-panel:fullscreen { width: 100vw; height: 100vh; border-radius: 0; background: linear-gradient(155deg, #c6edf3, #9fd9e4); }
+.summary-panel:fullscreen .graph-toolbar { gap: 4px; padding: 4px 8px; border-radius: 14px; }
+.summary-panel:fullscreen .graph-toolbar button { width: 36px; height: 36px; border-radius: 8px; }
+.summary-panel:fullscreen .graph-toolbar svg { width: 22px; height: 22px; }
+.summary-panel:fullscreen .toolbar-divider { height: 24px; margin-inline: 3px; }
+.summary-panel:fullscreen .selected-node-details { align-items: flex-start; gap: 14px; margin-top: 9px; padding: 12px 15px; border-radius: 12px; }
+.summary-panel:fullscreen .selected-node-details > div { gap: 7px 20px; }
+.summary-panel:fullscreen .selected-node-details span,
+.summary-panel:fullscreen .selected-node-details strong,
+.summary-panel:fullscreen .selected-node-details :deep(.gene-symbol),
+.summary-panel:fullscreen .selected-node-details :deep(.gene-name),
+.summary-panel:fullscreen .selected-node-details :deep(.gene-status) { font-size: 1rem; line-height: 1.3; }
+.summary-panel:fullscreen .selected-node-details span { font-weight: 650; }
+.summary-panel:fullscreen .selected-node-details strong { font-weight: 950; }
+.summary-panel:fullscreen .selected-node-details button { width: 26px; height: 26px; font-size: 1.2rem; }
+.summary-panel:fullscreen .graph-legend { gap: 9px 20px; padding: 11px 6px 5px; font-size: 0.92rem; }
+.summary-panel:fullscreen .graph-legend strong { padding-right: 20px; border-right-width: 3px; }
+.summary-panel:fullscreen .legend-dot { width: 15px; height: 15px; }
+.summary-panel:fullscreen .legend-line { width: 28px; height: 4px; }
 .subgraph-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: clamp(7px, 1dvh, 11px); }
 .subgraph-footer button { flex: none; min-width: min(100%, 180px); padding: 8px 22px; }
 

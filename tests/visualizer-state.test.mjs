@@ -84,6 +84,9 @@ test('node clicks fill exploration and path fields and synchronize endpoint high
     '../datasets': { formatCount: String },
     '../composables/useDatasetGraph': { useDatasetGraph: () => state },
     '../composables/useDatasetProteins': { useDatasetProteins: () => ({ proteins: vue.ref(['A', 'B', 'C']), loadingProteins: vue.ref(false), proteinListError: vue.ref('') }) },
+    '../composables/useGeneAnnotation': { useGeneAnnotation: () => ({ annotation: vue.ref(null), loadingAnnotation: vue.ref(false), annotationError: vue.ref(''), retryAnnotation() {} }) },
+    '../infrastructure/datasetsApi': { requestGraphExpansion: async () => ({}) },
+    '../infrastructure/datasetsStorage': { getStoredDataset: async () => null },
   }).default
   const { host, root } = renderer()
   const app = host.createApp(View, { modelValue: { name: 'test.csv' }, datasets: [] })
@@ -109,7 +112,7 @@ test('node clicks fill exploration and path fields and synchronize endpoint high
   send('B')
   await settle()
   assert.equal(field('destination-protein').props.value, 'B')
-  assert.deepEqual(messages.at(-1), { type: 'prote-prote:highlight-proteins', origin: 'A', destination: 'B' })
+  assert.deepEqual(messages.at(-1), { type: 'prote-prote:highlight-proteins', origin: 'A', destination: 'B', selected: '', pickingPath: true })
   // Inactive viewers and unrelated windows cannot change the current selection.
   send('C', frames[1])
   listeners.get('message')({ source: {}, data: { type: 'prote-prote:protein-selected', id: 'C' } })
@@ -146,7 +149,7 @@ test('viewer colors both endpoints, restores previous colors, and ignores empty 
       getIds: () => [...records.keys()],
       update: updates => updates.forEach(update => records.set(update.id, { ...records.get(update.id), ...update })),
     },
-    network: { on: (name, handler) => { if (name === 'click') click = handler }, redraw() {} },
+    network: { on: (name, handler) => { if (name === 'click') click = handler }, getConnectedNodes: () => [], redraw() {} },
     window: { parent, addEventListener: (_, handler) => { receive = handler } },
   }
   runInNewContext(script('PROTEIN_SELECTION_SCRIPT'), context)
@@ -157,14 +160,14 @@ test('viewer colors both endpoints, restores previous colors, and ignores empty 
   assert.equal(published[0].id, 'A')
   const highlight = (origin, destination, source = parent) => receive({ source, data: { type: 'prote-prote:highlight-proteins', origin, destination } })
   highlight('A', 'B')
-  assert.equal(records.get('A').color.background, '#1550bd')
+  assert.equal(records.get('A').color.background, '#9857c8')
   assert.equal(records.get('B').color.background, '#20a464')
   assert.equal(records.get('B').color.highlight.background, '#20a464')
   highlight('B', '')
   assert.equal(records.get('A').color, '#ff8539')
-  assert.equal(records.get('B').color.background, '#1550bd')
+  assert.equal(records.get('B').color.background, '#9857c8')
   highlight('A', 'B', {})
-  assert.equal(records.get('B').color.background, '#1550bd')
+  assert.equal(records.get('B').color.background, '#9857c8')
   highlight('', '')
   assert.equal(records.get('B').color, '#ff8539')
 })

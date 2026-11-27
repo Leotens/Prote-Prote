@@ -89,7 +89,9 @@ test('protein list is reused on reentry and fetched again after dataset replacem
   replaced.app.unmount()
 })
 
-test('summary toggles preserve the same two graph viewers', async () => {
+test('summary toggles mount and remove the two MST graph viewers', async () => {
+  globalThis.document = { fullscreenElement: null, addEventListener() {}, removeEventListener() {} }
+  globalThis.window = { addEventListener() {}, removeEventListener() {} }
   let mounts = 0
   let unmounts = 0
   const Graph = vue.defineComponent({ setup() {
@@ -97,18 +99,22 @@ test('summary toggles preserve the same two graph viewers', async () => {
     vue.onBeforeUnmount(() => unmounts++)
     return () => vue.h('iframe')
   } })
-  const protein = id => ({ id, degree: 1, neighbor_count: 1, component: 1, component_size: 2 })
-  const result = vue.ref({ protein_a: protein('A'), protein_b: protein('B'), shared_neighbors: [], same_component: true, directly_connected: true, degree_difference: 0, graph_a: {}, graph_b: {} })
+  const protein = id => ({ id, degree: 1, neighbor_count: 1, neighbors: [], component: 1, component_id: '1', component_size: 2 })
+  const result = vue.ref({ protein_a: protein('A'), protein_b: protein('B'), shared_neighbors: [], shared_neighbors_count: 0, same_component: true, directly_connected: true, degree_difference: 0, elapsed_ms: 0, graph_a: {}, graph_b: {} })
   const source = readFileSync(new URL('../src/views/CompareProteinsView.vue', import.meta.url), 'utf8')
   const compiled = compileScript(parse(source).descriptor, { id: 'comparison-test', inlineTemplate: true }).content
   const Empty = vue.defineComponent({ setup: () => () => vue.h('span') })
   const View = evaluate(compiled, {
     '../components/BackToMenu.vue': { default: Empty },
+    '../components/GeneAnnotationSummary.vue': { default: Empty },
     '../components/ProteinSelector.vue': { default: Empty },
     '../components/ProteinComparisonGraph.vue': { default: Graph },
     '../datasets': { formatCount: String },
     '../composables/useProteinComparison': { useProteinComparison: () => ({
-      proteins: vue.ref(['A', 'B']), result, loadingProteins: vue.ref(false), comparing: vue.ref(false), error: vue.ref(''), compare: async () => true, loadProteins() {},
+      proteins: vue.ref(['A', 'B']), comparisonResult: result, loadingProteins: vue.ref(false), proteinListError: vue.ref(''), comparisonError: vue.ref(''), comparing: vue.ref(false),
+      comparisonSubgraphHtml: vue.ref(''), comparisonSubgraphError: vue.ref(''), mstComparisonResult: result, comparisonGraphMode: vue.ref('mst'),
+      generatingComparisonSubgraph: vue.ref(false), downloadingComparisonSubgraph: vue.ref(false), compare: async () => true,
+      generateComparisonSubgraph: async () => true, downloadComparisonSubgraph: async () => {}, clearComparison() {},
     }) },
   }).default
   const { host, root } = renderer()
@@ -118,16 +124,18 @@ test('summary toggles preserve the same two graph viewers', async () => {
   const all = node => [node, ...node.children.flatMap(all)]
   const viewers = () => all(root).filter(node => node.type === 'iframe')
   const button = text => all(root).find(node => node.type === 'button' && all(node).some(child => child.text.includes(text)))
-  const initial = viewers()
-  assert.equal(initial.length, 2)
+  assert.equal(viewers().length, 0)
   for (let i = 0; i < 2; i++) {
     button('Visualizar ambas').props.onClick()
     await settle()
+    assert.equal(viewers().length, 2)
     button('Vista resumida').props.onClick()
     await settle()
-    assert.deepEqual(viewers(), initial)
-    assert.equal(mounts, 2)
-    assert.equal(unmounts, 0)
+    assert.equal(viewers().length, 0)
+    assert.equal(mounts, 2 * (i + 1))
+    assert.equal(unmounts, 2 * (i + 1))
   }
   app.unmount()
+  delete globalThis.document
+  delete globalThis.window
 })

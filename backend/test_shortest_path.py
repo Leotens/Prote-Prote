@@ -29,7 +29,7 @@ class ShortestPathTests(unittest.TestCase):
         self.assertEqual(result["path"], ["A", "D", "E"])
         self.assertEqual(result["length"], 2)
         self.assertGreaterEqual(result["elapsed_ms"], 0)
-        render.assert_called_once_with(["A", "D", "E"], [("A", "D"), ("D", "E")], "A", ANY, {"A": "#1550bd", "E": "#20a464"})
+        render.assert_called_once_with(["A", "D", "E"], [("A", "D"), ("D", "E")], "A", ANY, {"A": "#9857c8", "E": "#20a464"})
         self.assertEqual(render.call_args.args[3]["A"]["component_size"], 5)
 
     def test_same_protein_has_zero_length_and_one_node(self):
