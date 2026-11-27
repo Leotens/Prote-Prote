@@ -509,6 +509,54 @@ def generate_graph(
     return HTMLResponse(html, headers={"X-Graph-Node-Count": str(len(nodes))})
 
 
+NEIGHBORHOOD_NODE_LIMIT = 150
+
+
+def select_neighborhood_nodes(distances: dict[str, int], parents: dict[str, str], root: str, limit: int) -> list[str]:
+    """Alternate distance levels and parent branches, preserving complete shortest routes."""
+    layers = {}
+    for node, depth in distances.items():
+        if depth:
+            layers.setdefault(depth, {}).setdefault(parents[node], deque()).append(node)
+    candidates = {}
+    for depth, branches in layers.items():
+        iterators = deque(branches.values())
+        order = deque()
+        while iterators:
+            branch = iterators.popleft()
+            order.append(branch.popleft())
+            if branch:
+                iterators.append(branch)
+        candidates[depth] = order
+    selected = {root}
+    ordered = [root]
+    while len(ordered) < limit:
+        changed = False
+        for depth in sorted(candidates):
+            queue = candidates[depth]
+            while queue:
+                node = queue.popleft()
+                if node in selected:
+                    continue
+                route = []
+                current = node
+                while current not in selected:
+                    route.append(current)
+                    current = parents[current]
+                if len(ordered) + len(route) > limit:
+                    continue
+                for current in reversed(route):
+                    selected.add(current)
+                    ordered.append(current)
+                changed = True
+                break
+            if len(ordered) == limit:
+                break
+        if not changed:
+            break
+    return ordered
+
+
 @app.post("/api/datasets/subgraph")
 def generate_subgraph(
     file: UploadFile,
@@ -543,31 +591,48 @@ def generate_subgraph(
         )
 
     distances = {protein_id: 0}
+    parents = {}
     queue = deque([protein_id])
     while queue:
         node = queue.popleft()
         if distances[node] == distance:
             continue
         for neighbor in traversal[node]:
-            if global_scope and visible_graph is None and len(distances) >= node_limit:
-                break
             if neighbor in graph_node_set and neighbor not in distances:
                 distances[neighbor] = distances[node] + 1
+                parents[neighbor] = node
                 queue.append(neighbor)
 
-    nodes = list(distances)
+    total_nodes = len(distances)
+    bounded = global_scope and visible_graph is None
+    nodes = select_neighborhood_nodes(distances, parents, protein_id, NEIGHBORHOOD_NODE_LIMIT) if bounded else list(distances)
     selected = set(nodes)
-    visible_edges = [(source, target) for source, target in scoped_edges if source in selected and target in selected]
+    induced_edges = [(source, target) for source, target in scoped_edges if source in selected and target in selected]
+    if bounded:
+        route_edges = {tuple(sorted((node, parents[node]))) for node in nodes if node != protein_id}
+        visible_edges = [edge for edge in induced_edges if edge in route_edges]
+        extra_edges = [edge for edge in induced_edges if edge not in route_edges]
+    else:
+        visible_edges = induced_edges
+        extra_edges = []
+    neighborhood = {
+        "node_limit": NEIGHBORHOOD_NODE_LIMIT if bounded else None,
+        "node_count": len(nodes), "total_node_count": total_nodes,
+        "partial": len(nodes) < total_nodes,
+        "extra_edges": extra_edges,
+        "requested_distance": distance,
+        "reached_distance": max(distances[node] for node in nodes),
+    }
     details = comparison_node_details(proteins, edges, set(nodes)) if visible_graph is not None or global_scope or selection_seed is not None else protein_details(proteins, graph_nodes, len(component))
     if not interactive:
-        image = render_graph_image(nodes, visible_edges, {node: HOP_COLORS[hops] for node, hops in distances.items()})
+        image = render_graph_image(nodes, visible_edges, {node: HOP_COLORS[distances[node]] for node in nodes})
         if include_details:
-            return {"details": details[protein_id], "image_base64": b64encode(image.body).decode("ascii")}
+            return {"details": details[protein_id], "neighborhood": neighborhood, "image_base64": b64encode(image.body).decode("ascii")}
         return image
 
     html = render_subgraph_html(nodes, visible_edges, protein_id, details, hop_distances=distances)
     if include_details:
-        return {"details": details[protein_id], "html": html.body.decode("utf-8")}
+        return {"details": details[protein_id], "neighborhood": neighborhood, "html": html.body.decode("utf-8")}
     return html
 
 

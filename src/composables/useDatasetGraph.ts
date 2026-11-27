@@ -1,6 +1,6 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import type { Dataset } from '../datasets'
-import { requestDatasetGraph, requestDatasetShortestPath, requestDatasetSubgraph, type ProteinDetails, type ShortestPathResult, type GraphSnapshot } from '../infrastructure/datasetsApi'
+import { requestDatasetGraph, requestDatasetShortestPath, requestDatasetSubgraph, type ProteinDetails, type ShortestPathResult, type GraphSnapshot, type NeighborhoodInfo } from '../infrastructure/datasetsApi'
 import { getStoredDataset } from '../infrastructure/datasetsStorage'
 
 export function useDatasetGraph() {
@@ -25,6 +25,7 @@ export function useDatasetGraph() {
   let displayedNeighborhoodGlobalScope = false
   let displayedNeighborhoodSnapshot: GraphSnapshot | undefined
   const subgraphKind = ref<'neighborhood' | 'shortest-path'>('neighborhood')
+  const neighborhoodInfo = ref<NeighborhoodInfo | null>(null)
   const fullProteinDetails = ref<ProteinDetails | null>(null)
   const subgraphProteinDetails = ref<ProteinDetails | null>(null)
   const selectedProtein = computed(() => activeGraph.value === 'full' ? fullProteinDetails.value : subgraphProteinDetails.value)
@@ -32,6 +33,7 @@ export function useDatasetGraph() {
   let pendingGraph: AbortController | undefined
 
   function clearGraph() {
+    neighborhoodInfo.value = null
     fullGraphNodeCount.value = null
     fullGraphHtml.value = ''
     subgraphHtml.value = ''
@@ -137,6 +139,7 @@ export function useDatasetGraph() {
       else subgraphImageUrl.value = URL.createObjectURL(result.image)
       displayedNeighborhoodGlobalScope = globalScope
       displayedNeighborhoodSnapshot = visibleGraph
+      neighborhoodInfo.value = result.neighborhood ?? null
       subgraphKind.value = 'neighborhood'
       subgraphProteinDetails.value = result.details ?? null
       activeGraph.value = 'subgraph'
@@ -250,6 +253,7 @@ export function useDatasetGraph() {
     pathResult,
     pathStatus,
     subgraphKind,
+    neighborhoodInfo,
     generateShortestPath,
     graphImageUrl,
     fullGraphHtml,
