@@ -170,8 +170,12 @@ export async function requestDatasetShortestPath(
     interactive: boolean,
     signal: AbortSignal,
     selectionSeed?: number,
+    globalScope = false,
+    visibleGraph?: GraphSnapshot,
 ): Promise<ShortestPathResult> {
     const body = new FormData()
+    body.append('global_scope', String(globalScope))
+    if (!globalScope && visibleGraph) body.append('visible_graph', JSON.stringify(visibleGraph))
     if (selectionSeed !== undefined) body.append('selection_seed', String(selectionSeed))
     body.append('file', file)
     body.append('has_header', String(hasHeader))
@@ -226,8 +230,12 @@ export async function requestDatasetSubgraph(
     interactive: boolean,
     signal: AbortSignal,
     selectionSeed?: number,
+    visibleGraph?: GraphSnapshot,
+    globalScope = false,
 ): Promise<GraphResponse> {
     const body = new FormData()
+    body.append('global_scope', String(globalScope))
+    if (!globalScope && visibleGraph) body.append('visible_graph', JSON.stringify(visibleGraph))
     if (selectionSeed !== undefined) body.append('selection_seed', String(selectionSeed))
     body.append('file', file)
     body.append('has_header', String(hasHeader))
@@ -308,4 +316,25 @@ export async function requestGeneAnnotation(id: string, signal: AbortSignal): Pr
     const text = (value: unknown) => typeof value === 'string' && value.trim() ? value : null
     const annotation = { id: text(data._id) ?? id, symbol: text(data.symbol), name: text(data.name), summary: text(data.summary) }
     return annotation.symbol || annotation.name || annotation.summary ? annotation : null
+}
+
+
+export interface GraphExpansion {
+    root: string
+    details: ProteinDetails
+    nodes: { id: string, label: string, title: string, color: string, protein_details: ProteinDetails }[]
+    edges: { id: string, from: string, to: string }[]
+    html?: string
+}
+
+export function requestGraphExpansion(file: File, hasHeader: boolean, proteinId: string, visibleNodes: string[], visibleNeighbors: string[], count: number, includeHtml: boolean, signal: AbortSignal) {
+    return requestProteinAnalysis<GraphExpansion>('explore', file, hasHeader, signal, {
+        protein_id: proteinId, visible_nodes: JSON.stringify(visibleNodes), visible_neighbors: JSON.stringify(visibleNeighbors), count: String(count), include_html: String(includeHtml),
+    })
+}
+
+
+export interface GraphSnapshot {
+    nodes: string[]
+    edges: [string, string][]
 }

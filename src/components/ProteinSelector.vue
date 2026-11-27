@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 
 const props = defineProps<{ id: string, label: string, proteins: readonly string[], disabled?: boolean, placeholder: string }>()
+const emit = defineEmits<{ select: [id: string], submit: [] }>()
 const model = defineModel<string>({ required: true })
 const open = ref(false)
 const active = ref(-1)
@@ -16,6 +17,7 @@ watch(() => props.disabled, disabled => { if (disabled) open.value = false })
 
 function choose(id: string) {
   model.value = id
+  emit('select', id)
   open.value = false
   input.value?.focus()
   open.value = false
@@ -32,6 +34,10 @@ function onKeydown(event: KeyboardEvent) {
     event.preventDefault()
     const id = options.value[active.value]
     if (id) choose(id)
+  } else if (event.key === 'Enter') {
+    event.preventDefault()
+    open.value = false
+    emit('submit')
   } else if (event.key === 'Escape') {
     event.preventDefault()
     open.value = false

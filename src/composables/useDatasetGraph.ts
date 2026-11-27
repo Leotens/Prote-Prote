@@ -1,6 +1,6 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import type { Dataset } from '../datasets'
-import { requestDatasetGraph, requestDatasetShortestPath, requestDatasetSubgraph, type ProteinDetails, type ShortestPathResult } from '../infrastructure/datasetsApi'
+import { requestDatasetGraph, requestDatasetShortestPath, requestDatasetSubgraph, type ProteinDetails, type ShortestPathResult, type GraphSnapshot } from '../infrastructure/datasetsApi'
 import { getStoredDataset } from '../infrastructure/datasetsStorage'
 
 export function useDatasetGraph() {
@@ -20,6 +20,10 @@ export function useDatasetGraph() {
   const pathResult = ref<ShortestPathResult | null>(null)
   const pathStatus = ref('Sin consulta')
   const displayedPath = ref<string[]>([])
+  let displayedPathGlobalScope = false
+  let displayedPathSnapshot: GraphSnapshot | undefined
+  let displayedNeighborhoodGlobalScope = false
+  let displayedNeighborhoodSnapshot: GraphSnapshot | undefined
   const subgraphKind = ref<'neighborhood' | 'shortest-path'>('neighborhood')
   const fullProteinDetails = ref<ProteinDetails | null>(null)
   const subgraphProteinDetails = ref<ProteinDetails | null>(null)
@@ -35,6 +39,10 @@ export function useDatasetGraph() {
     pathResult.value = null
     pathStatus.value = 'Sin consulta'
     displayedPath.value = []
+    displayedPathGlobalScope = false
+    displayedPathSnapshot = undefined
+    displayedNeighborhoodGlobalScope = false
+    displayedNeighborhoodSnapshot = undefined
     subgraphKind.value = 'neighborhood'
     fullProteinDetails.value = null
     subgraphProteinDetails.value = null
@@ -96,7 +104,7 @@ export function useDatasetGraph() {
     }
   }
 
-  async function generateSubgraph(dataset: Dataset, proteinId: string, distance: number, nodeLimit: number, interactive: boolean) {
+  async function generateSubgraph(dataset: Dataset, proteinId: string, distance: number, nodeLimit: number, interactive: boolean, visibleGraph?: GraphSnapshot, globalScope = false) {
     if (generatingGraph.value) return
 
     generatingGraph.value = true
@@ -117,6 +125,8 @@ export function useDatasetGraph() {
         interactive,
         controller.signal,
         selectionSeed,
+        visibleGraph,
+        globalScope,
       )
       if (controller.signal.aborted) return
 
@@ -125,6 +135,8 @@ export function useDatasetGraph() {
       subgraphImageUrl.value = ''
       if ('html' in result) subgraphHtml.value = result.html
       else subgraphImageUrl.value = URL.createObjectURL(result.image)
+      displayedNeighborhoodGlobalScope = globalScope
+      displayedNeighborhoodSnapshot = visibleGraph
       subgraphKind.value = 'neighborhood'
       subgraphProteinDetails.value = result.details ?? null
       activeGraph.value = 'subgraph'
@@ -139,7 +151,7 @@ export function useDatasetGraph() {
     }
   }
 
-  async function generateShortestPath(dataset: Dataset, origin: string, destination: string, nodeLimit: number, interactive: boolean) {
+  async function generateShortestPath(dataset: Dataset, origin: string, destination: string, nodeLimit: number, interactive: boolean, globalScope = false, visibleGraph?: GraphSnapshot) {
     if (generatingGraph.value) return
 
     generatingGraph.value = true
@@ -152,11 +164,11 @@ export function useDatasetGraph() {
     try {
       const record = await getStoredDataset(dataset.name)
       if (!record) throw new Error('No se pudo recuperar el dataset guardado en este navegador.')
-      const result = await requestDatasetShortestPath(record.file, record.hasHeader, origin, destination, nodeLimit, interactive, controller.signal, selectionSeed)
+      const result = await requestDatasetShortestPath(record.file, record.hasHeader, origin, destination, nodeLimit, interactive, controller.signal, selectionSeed, globalScope, visibleGraph)
       if (controller.signal.aborted) return
 
       pathResult.value = result
-      pathStatus.value = result.path.length ? 'Camino encontrado' : 'Sin camino en el grafo generado'
+      pathStatus.value = result.path.length ? 'Camino encontrado' : globalScope ? 'Sin camino en el dataset' : 'Sin camino en la red muestra'
       if (!result.path.length) {
         activeGraph.value = 'full'
         return
@@ -166,6 +178,8 @@ export function useDatasetGraph() {
       if (subgraphImageUrl.value) URL.revokeObjectURL(subgraphImageUrl.value)
       subgraphImageUrl.value = result.image_base64 ? `data:image/png;base64,${result.image_base64}` : ''
       displayedPath.value = result.path
+      displayedPathGlobalScope = globalScope
+      displayedPathSnapshot = visibleGraph
       subgraphKind.value = 'shortest-path'
       subgraphProteinDetails.value = null
       activeGraph.value = 'subgraph'
@@ -193,7 +207,7 @@ export function useDatasetGraph() {
         const path = displayedPath.value
         const record = await getStoredDataset(dataset.name)
         if (!record || !path[0] || !path[path.length - 1]) throw new Error('No se pudo recuperar la ruta mostrada.')
-        const result = await requestDatasetShortestPath(record.file, record.hasHeader, path[0], path[path.length - 1]!, nodeLimit, false, controller.signal, selectionSeed)
+        const result = await requestDatasetShortestPath(record.file, record.hasHeader, path[0], path[path.length - 1]!, nodeLimit, false, controller.signal, selectionSeed, displayedPathGlobalScope, displayedPathSnapshot)
         if (!result.image_base64) throw new Error('No se pudo preparar la imagen PNG.')
         const anchor = document.createElement('a')
         anchor.href = `data:image/png;base64,${result.image_base64}`
@@ -207,7 +221,7 @@ export function useDatasetGraph() {
       if (!record) throw new Error('No se pudo recuperar el dataset guardado en este navegador.')
 
       const result = graphToDownload === 'subgraph'
-        ? await requestDatasetSubgraph(record.file, record.hasHeader, proteinId, distance, nodeLimit, false, controller.signal, selectionSeed)
+        ? await requestDatasetSubgraph(record.file, record.hasHeader, proteinId, distance, nodeLimit, false, controller.signal, selectionSeed, displayedNeighborhoodSnapshot, displayedNeighborhoodGlobalScope)
         : await requestDatasetGraph(record.file, record.hasHeader, nodeLimit, false, controller.signal, selectionSeed)
 
       if (!('image' in result)) throw new Error('No se pudo preparar la imagen PNG.')

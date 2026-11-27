@@ -1,4 +1,6 @@
 import csv
+import json
+from pathlib import Path
 from random import Random
 from base64 import b64encode
 from io import BytesIO
@@ -32,7 +34,7 @@ PROTEIN_SELECTION_SCRIPT = """
     if (!event.nodes.length) return;
     const node = nodes.get(event.nodes[0]);
     if (node) {
-      window.parent.postMessage({ type: 'prote-prote:protein-selected', id: String(node.id), details: node.protein_details }, '*');
+      window.parent.postMessage({ type: 'prote-prote:protein-selected', id: String(node.id), details: node.protein_details, visible_neighbors: network.getConnectedNodes(node.id).map(String) }, '*');
     }
   });
 </script>
@@ -90,17 +92,27 @@ EXPANDED_GRAPH_FOCUS_SCRIPT = """
 GRAPH_CONTROL_SCRIPT = """
 <script>
   const originalNodeColors = new Map(nodes.get().map(function (node) { return [node.id, node.color]; }));
+  let currentHighlights = { selected: '', origin: '', destination: '', pickingPath: false };
+  function refreshNodeHighlights() {
+    nodes.update(nodes.getIds().map(function (id) {
+      const selected = String(id) === currentHighlights.selected;
+      const roleColor = String(id) === currentHighlights.origin ? '#9857c8'
+        : String(id) === currentHighlights.destination ? '#20a464' : null;
+      const color = currentHighlights.pickingPath ? roleColor
+        : selected ? '#1550bd' : roleColor;
+      const selectedBorder = !currentHighlights.pickingPath && selected ? '#1550bd' : color;
+      return { id: id, color: color ? { background: color, border: color,
+        highlight: { background: color, border: selectedBorder },
+        hover: { background: color, border: color } } : originalNodeColors.get(id) };
+    }));
+    network.redraw();
+    if (typeof schedulePhysicsRest === 'function') schedulePhysicsRest();
+  }
   window.addEventListener('message', function (event) {
     if (event.source !== window.parent || !event.data) return;
     if (event.data.type === 'prote-prote:highlight-proteins') {
-      nodes.update(nodes.getIds().map(function (id) {
-        const selectedColor = String(id) === event.data.origin ? '#1550bd'
-          : String(id) === event.data.destination ? '#20a464' : null;
-        return { id: id, color: selectedColor ? { background: selectedColor, border: selectedColor,
-          highlight: { background: selectedColor, border: selectedColor },
-          hover: { background: selectedColor, border: selectedColor } } : originalNodeColors.get(id) };
-      }));
-      network.redraw();
+      currentHighlights = { selected: event.data.selected, origin: event.data.origin, destination: event.data.destination, pickingPath: event.data.pickingPath === true };
+      refreshNodeHighlights();
       return;
     }
     if (event.data.type !== 'prote-prote:graph-control') return;
@@ -124,7 +136,10 @@ GRAPH_CONTROL_SCRIPT = """
 </script>
 """
 
-GRAPH_CONTROLS_SCRIPT = GRAPH_CONTROL_SCRIPT
+def graph_controls_script() -> str:
+    # Read on each render: uvicorn's Python reload does not watch standalone JS edits.
+    exploration_script = Path(__file__).with_name("exploration.js").read_text(encoding="utf-8")
+    return GRAPH_CONTROL_SCRIPT + "<script>" + exploration_script + "</script>"
 
 
 class UnionFind:
@@ -321,6 +336,34 @@ def read_dataset(file: UploadFile, has_header: bool | None):
     return proteins, edges, row_count
 
 
+def parse_visible_graph(serialized: str, proteins: dict[str, list[str]], edges: dict):
+    try:
+        snapshot = json.loads(serialized)
+        graph_nodes = snapshot["nodes"]
+        pairs = snapshot["edges"]
+        if not isinstance(graph_nodes, list) or not all(isinstance(node, str) and node in proteins for node in graph_nodes):
+            raise ValueError()
+        if not isinstance(pairs, list):
+            raise ValueError()
+        node_set = set(graph_nodes)
+        scoped_edges = {}
+        for pair in pairs:
+            if not isinstance(pair, list) or len(pair) != 2 or not all(isinstance(node, str) and node in node_set for node in pair):
+                raise ValueError()
+            edge = tuple(sorted(pair))
+            if edge not in edges:
+                raise ValueError()
+            scoped_edges[edge] = None
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(status_code=422, detail="La red original no es válida.")
+    traversal = {node: [] for node in graph_nodes}
+    for source, target in scoped_edges:
+        traversal[source].append(target)
+        if source != target:
+            traversal[target].append(source)
+    return graph_nodes, scoped_edges, traversal
+
+
 def largest_component(proteins: dict[str, list[str]]) -> list[str]:
     visited: set[str] = set()
     largest: list[str] = []
@@ -351,7 +394,10 @@ def select_graph_nodes(component: list[str], limit: int, seed: int | None = None
     return Random(seed).sample(component, min(limit, len(component)))
 
 
-def render_graph_image(nodes: list[str], edges: list[tuple[str, str]]) -> Response:
+HOP_COLORS = {0: "#ff6b16", 1: "#ff8539", 2: "#ffb36c", 3: "#ffdab5"}
+
+
+def render_graph_image(nodes: list[str], edges: list[tuple[str, str]], node_colors: dict[str, str] | None = None) -> Response:
     graph = nx.Graph()
     graph.add_nodes_from(nodes)
     graph.add_edges_from(edges)
@@ -367,7 +413,7 @@ def render_graph_image(nodes: list[str], edges: list[tuple[str, str]]) -> Respon
         node_size=node_size,
     )
     nx.draw_networkx_nodes(
-        graph, positions, ax=axes, node_color="#ff8539",
+        graph, positions, ax=axes, node_color=[node_colors.get(node, "#ff8539") for node in nodes] if node_colors else "#ff8539",
         node_size=node_size, edgecolors="#fff3dd",
         linewidths=1.3 if show_labels else 0.45,
     )
@@ -459,7 +505,7 @@ def generate_graph(
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
-    html = document + ready_script + PROTEIN_SELECTION_SCRIPT + GRAPH_CONTROLS_SCRIPT + closing_tag + tail
+    html = document + ready_script + PROTEIN_SELECTION_SCRIPT + graph_controls_script() + closing_tag + tail
     return HTMLResponse(html, headers={"X-Graph-Node-Count": str(len(nodes))})
 
 
@@ -473,6 +519,8 @@ def generate_subgraph(
     interactive: Annotated[bool, Form()] = True,
     include_details: Annotated[bool, Form()] = False,
     selection_seed: Annotated[int | None, Form()] = None,
+    global_scope: Annotated[bool, Form()] = False,
+    visible_graph: Annotated[str | None, Form()] = None,
 ):
     proteins, edges, _ = read_dataset(file, has_header)
     protein_id = protein_id.strip()
@@ -482,7 +530,11 @@ def generate_subgraph(
         raise HTTPException(status_code=404, detail=f"No se encontró la proteína {protein_id} en el dataset.")
 
     component = largest_component(proteins)
-    graph_nodes = select_graph_nodes(list(proteins) if selection_seed is not None else component, node_limit, selection_seed)
+    graph_nodes = list(proteins) if global_scope else select_graph_nodes(list(proteins) if selection_seed is not None else component, node_limit, selection_seed)
+    scoped_edges = edges
+    traversal = proteins
+    if visible_graph is not None:
+        graph_nodes, scoped_edges, traversal = parse_visible_graph(visible_graph, proteins, edges)
     graph_node_set = set(graph_nodes)
     if protein_id not in graph_node_set:
         raise HTTPException(
@@ -496,34 +548,41 @@ def generate_subgraph(
         node = queue.popleft()
         if distances[node] == distance:
             continue
-        for neighbor in proteins[node]:
+        for neighbor in traversal[node]:
+            if global_scope and visible_graph is None and len(distances) >= node_limit:
+                break
             if neighbor in graph_node_set and neighbor not in distances:
                 distances[neighbor] = distances[node] + 1
                 queue.append(neighbor)
 
     nodes = list(distances)
     selected = set(nodes)
-    visible_edges = [(source, target) for source, target in edges if source in selected and target in selected]
-    details = comparison_node_details(proteins, edges, set(graph_nodes)) if selection_seed is not None else protein_details(proteins, graph_nodes, len(component))
+    visible_edges = [(source, target) for source, target in scoped_edges if source in selected and target in selected]
+    details = comparison_node_details(proteins, edges, set(nodes)) if visible_graph is not None or global_scope or selection_seed is not None else protein_details(proteins, graph_nodes, len(component))
     if not interactive:
-        image = render_graph_image(nodes, visible_edges)
+        image = render_graph_image(nodes, visible_edges, {node: HOP_COLORS[hops] for node, hops in distances.items()})
         if include_details:
             return {"details": details[protein_id], "image_base64": b64encode(image.body).decode("ascii")}
         return image
 
-    html = render_subgraph_html(nodes, visible_edges, protein_id, details)
+    html = render_subgraph_html(nodes, visible_edges, protein_id, details, hop_distances=distances)
     if include_details:
         return {"details": details[protein_id], "html": html.body.decode("utf-8")}
     return html
 
 
-def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str, details: dict | None = None, highlights: dict[str, str] | None = None, default_color: str = "#ff8539", edge_color: str | None = None) -> HTMLResponse:
+def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin: str, details: dict | None = None, highlights: dict[str, str] | None = None, default_color: str = "#ff8539", edge_color: str | None = None, hop_distances: dict[str, int] | None = None) -> HTMLResponse:
     net = Network(height="100vh", width="100%", cdn_resources="in_line", bgcolor="transparent")
     net.set_options('{"physics":{"stabilization":{"iterations":35,"updateInterval":10}}}')
     for node in nodes:
         is_origin = node == origin
-        color = (highlights or {}).get(node, "#1550bd" if is_origin else default_color)
-        net.add_node(node, label=node, color=color, title=f"Proteína de origen: {node}" if is_origin else node, size=32 if is_origin or node in (highlights or {}) else 22, protein_details=details.get(node) if details else None)
+        hops = hop_distances.get(node) if hop_distances is not None else None
+        base_color = HOP_COLORS.get(hops, default_color)
+        color = (highlights or {}).get(node, base_color)
+        title = f"Proteína de origen: {node}" if is_origin else node
+        if hops is not None:
+            title += f" · {hops} {'salto' if hops == 1 else 'saltos'} desde {origin}"
+        net.add_node(node, label=node, color=color, title=title, size=32 if is_origin or node in (highlights or {}) else 22, protein_details=details.get(node) if details else None)
     for source, target in edges:
         net.add_edge(source, target, color=edge_color) if edge_color else net.add_edge(source, target)
 
@@ -555,7 +614,7 @@ def render_subgraph_html(nodes: list[str], edges: list[tuple[str, str]], origin:
     </script>
     """
     document, closing_tag, tail = html.rpartition("</body>")
-    return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + GRAPH_CONTROLS_SCRIPT + closing_tag + tail)
+    return HTMLResponse(document + ready_script + PROTEIN_SELECTION_SCRIPT + graph_controls_script() + closing_tag + tail)
 
 
 def multi_source_neighborhood(
@@ -1102,12 +1161,18 @@ def generate_shortest_path(
     node_limit: Annotated[int, Form(ge=1)],
     interactive: Annotated[bool, Form()] = True,
     selection_seed: Annotated[int | None, Form()] = None,
+    global_scope: Annotated[bool, Form()] = False,
+    visible_graph: Annotated[str | None, Form()] = None,
 ):
     proteins, edges, _ = read_dataset(file, has_header)
     origin, destination = origin.strip(), destination.strip()
     if not origin or not destination:
         raise HTTPException(status_code=422, detail="Ingresa las proteínas de origen y destino.")
-    selected = set(select_graph_nodes(list(proteins) if selection_seed is not None else largest_component(proteins), node_limit, selection_seed))
+    selected = set(proteins) if global_scope else set(select_graph_nodes(list(proteins) if selection_seed is not None else largest_component(proteins), node_limit, selection_seed))
+    traversal = proteins
+    if not global_scope and visible_graph is not None:
+        graph_nodes, _, traversal = parse_visible_graph(visible_graph, proteins, edges)
+        selected = set(graph_nodes)
     for protein_id in (origin, destination):
         if protein_id not in proteins:
             raise HTTPException(status_code=404, detail=f"No se encontró la proteína {protein_id} en el dataset.")
@@ -1115,7 +1180,7 @@ def generate_shortest_path(
             raise HTTPException(status_code=422, detail=f"La proteína {protein_id} no está entre los {node_limit} nodos del grafo generado. Aumenta el límite de nodos y vuelve a generarlo.")
 
     started = perf_counter()
-    path = shortest_path(proteins, selected, origin, destination)
+    path = shortest_path(traversal, selected, origin, destination)
     elapsed_ms = (perf_counter() - started) * 1000
     result = {"path": path, "length": len(path) - 1 if path else None, "elapsed_ms": elapsed_ms}
     if not path:
@@ -1123,7 +1188,65 @@ def generate_shortest_path(
 
     path_edges = list(zip(path, path[1:]))
     if interactive:
-        result["html"] = render_subgraph_html(path, path_edges, origin, comparison_node_details(proteins, edges, set(path)), {origin: "#1550bd", destination: "#20a464"}).body.decode("utf-8")
+        result["html"] = render_subgraph_html(path, path_edges, origin, comparison_node_details(proteins, edges, set(path)), {origin: "#9857c8", destination: "#20a464"}).body.decode("utf-8")
     else:
         result["image_base64"] = b64encode(render_graph_image(path, path_edges).body).decode("ascii")
+    return result
+
+
+@app.post("/api/datasets/explore")
+def explore_dataset(
+    file: UploadFile,
+    has_header: Annotated[bool, Form()],
+    protein_id: Annotated[str, Form()],
+    visible_nodes: Annotated[str, Form()] = "[]",
+    count: Annotated[int, Form(ge=1, le=20)] = 10,
+    visible_neighbors: Annotated[str, Form()] = "[]",
+    include_html: Annotated[bool, Form()] = False,
+):
+    """Read neighbors from the full dataset, independently of any initial sample."""
+    proteins, all_edges, _ = read_dataset(file, has_header)
+    root = protein_id.strip()
+    if root not in proteins:
+        raise HTTPException(status_code=404, detail=f"No se encontró la proteína {root} en el dataset.")
+    try:
+        visible = json.loads(visible_nodes)
+        if not isinstance(visible, list) or not all(isinstance(node, str) for node in visible):
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="La lista de proteínas visibles no es válida.")
+    try:
+        connected = json.loads(visible_neighbors)
+        if not isinstance(connected, list) or not all(isinstance(node, str) for node in connected):
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="La lista de conexiones visibles no es válida.")
+    visible = set(visible)
+    connected = set(connected)
+    if not connected <= visible:
+        raise HTTPException(status_code=422, detail="Las conexiones visibles deben pertenecer a la red actual.")
+    if visible - proteins.keys():
+        raise HTTPException(status_code=422, detail="Hay proteínas visibles que no pertenecen al dataset.")
+    neighbors = list(dict.fromkeys(proteins[root]))
+    targets = set([node for node in neighbors if node not in connected][:count])
+    added = ([root] if root not in visible else []) + [node for node in neighbors if node in targets and node not in visible and node != root]
+    selected = visible | set(added)
+    added_set = set(added)
+    patch_edges = [(a, b) for a, b in all_edges if a in selected and b in selected and (
+        (a == root and b in targets) or (b == root and a in targets)
+        or (a != root and b != root and (a in added_set or b in added_set))
+    )]
+    details = comparison_node_details(proteins, all_edges, set(added) | {root})
+    result = {
+        "root": root,
+        "details": details[root],
+        "nodes": [{"id": node, "label": node, "title": node, "color": "#ff8539",
+                   "shape": "dot", "size": 22, "protein_details": details[node]} for node in added],
+        "edges": [{"id": "explore:" + json.dumps(sorted((a, b))), "from": a, "to": b}
+                  for a, b in patch_edges],
+    }
+    if include_html:
+        if visible:
+            raise HTTPException(status_code=422, detail="Inicia un visor nuevo sin nodos previos.")
+        result["html"] = render_subgraph_html(added, patch_edges, root, details).body.decode("utf-8")
     return result

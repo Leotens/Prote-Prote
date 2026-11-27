@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ProteinSelector from '../components/ProteinSelector.vue'
 import { useDatasetProteins } from '../composables/useDatasetProteins'
 import BackToMenu from '../components/BackToMenu.vue'
 import { formatCount, type Dataset } from '../datasets'
 import { useDatasetGraph } from '../composables/useDatasetGraph'
 import { useGeneAnnotation } from '../composables/useGeneAnnotation'
+import { requestGraphExpansion } from '../infrastructure/datasetsApi'
+import { getStoredDataset } from '../infrastructure/datasetsStorage'
 
 defineProps<{ datasets: readonly Dataset[] }>()
 const dataset = defineModel<Dataset>({ required: true })
@@ -14,6 +16,8 @@ const emit = defineEmits<{ back: [] }>()
 const mode = ref<'neighborhood' | 'shortest-path'>('neighborhood')
 const origin = ref('')
 const destination = ref('')
+const generatedNeighborhoodScope = ref<'sample' | 'dataset'>('sample')
+const queriedPathScope = ref<'sample' | 'dataset'>('sample')
 const proteinId = ref('')
 const distanceLevel = ref(2)
 const pickerOpen = ref(false)
@@ -45,8 +49,141 @@ const {
   showGraph,
   clearGraph,
 } = useDatasetGraph()
+type ViewerState = { ids: string[], edges: [string, string][], connected: string[], canUndo: boolean }
+const viewerStates = ref<Record<'full' | 'subgraph', ViewerState>>({
+  full: { ids: [], edges: [], connected: [], canUndo: false },
+  subgraph: { ids: [], edges: [], connected: [], canUndo: false },
+})
+const currentViewerState = computed(() => viewerStates.value[activeGraph.value])
+const neighborhoodNodeBudget = computed(() => typeof nodeLimit.value === 'number' && Number.isSafeInteger(nodeLimit.value) && nodeLimit.value > 0 ? nodeLimit.value : 100)
+const connectedNeighborIds = computed(() => new Set(currentViewerState.value.connected))
+const remainingConnections = computed(() => (selectedProtein.value?.neighbors ?? []).filter(id => !connectedNeighborIds.value.has(id)).length)
+const maxExpansionConnections = 20
+const expansionAmount = ref<number | null>(10)
+const expandingGraph = ref(false)
+const globalProteinId = ref('')
+const explorationStatus = ref('')
+let pendingExpansion: AbortController | undefined
+let expansionRequest = 0
+let expansionTimeout: number | undefined
+
+function cancelExpansion() {
+  pendingExpansion?.abort()
+  pendingExpansion = undefined
+  window.clearTimeout(expansionTimeout)
+  expandingGraph.value = false
+  expansionRequest++
+}
+
+function sendExploration(action: string, payload: Record<string, unknown> = {}) {
+  const frame = activeGraph.value === 'full' ? graphFrame.value : subgraphFrame.value
+  frame?.contentWindow?.postMessage({ type: 'prote-prote:exploration', action, ...payload }, '*')
+}
+
+async function expandProtein(id: string, focus = false) {
+  id = id.trim()
+  if (!id || expandingGraph.value || loadingGraph.value) return
+  if (!focus && activeGraph.value !== 'full') return
+  const amount = focus ? 10 : expansionAmount.value
+  if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount < 1 || amount > maxExpansionConnections) return
+  const bootstrap = !graphHtml.value
+  const channel = activeGraph.value
+  const current = currentViewerState.value
+  const controller = new AbortController()
+  pendingExpansion = controller
+  const requestId = ++expansionRequest
+  expandingGraph.value = true
+  graphError.value = ''
+  explorationStatus.value = ''
+  expansionTimeout = window.setTimeout(() => {
+    if (requestId !== expansionRequest) return
+    controller.abort()
+    expandingGraph.value = false
+    graphError.value = 'La expansión tardó demasiado. Vuelve a intentarlo.'
+  }, 60_000)
+  try {
+    const record = await getStoredDataset(dataset.value.name)
+    if (controller.signal.aborted) return
+    if (!record) throw new Error('No se pudo recuperar el dataset guardado.')
+    const result = await requestGraphExpansion(record.file, record.hasHeader, id,
+      bootstrap ? [] : current.ids,
+      bootstrap || selectedProtein.value?.id !== id ? [] : current.connected,
+      amount, bootstrap, controller.signal)
+    if (controller.signal.aborted || requestId !== expansionRequest) return
+    if (bootstrap) {
+      if (!result.html) throw new Error('No se pudo abrir el visor interactivo.')
+      clearGraph()
+      fullGraphHtml.value = result.html
+      fullGraphNodeCount.value = result.nodes.length
+      fullProteinDetails.value = result.details
+      proteinId.value = id
+      generatedNodeLimit.value = typeof nodeLimit.value === 'number' && nodeLimit.value > 0 ? nodeLimit.value : 100
+      generatedInteractive.value = true
+      expandingGraph.value = false
+      window.clearTimeout(expansionTimeout)
+      explorationStatus.value = 'Exploración interactiva iniciada desde la proteína buscada.'
+    } else {
+      if (activeGraph.value !== channel) return
+      sendExploration('expand', { ...result, requestId, focus })
+      // The iframe confirms the applied patch before another expansion can start.
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      graphError.value = error instanceof Error ? error.message : 'No se pudieron agregar conexiones.'
+      expandingGraph.value = false
+      window.clearTimeout(expansionTimeout)
+    }
+  } finally {
+    if (pendingExpansion === controller) pendingExpansion = undefined
+  }
+}
+
+async function searchGlobalProtein(id = globalProteinId.value) {
+  if (loadingGraph.value || expandingGraph.value) return
+  mode.value = 'neighborhood'
+  if (activeGraph.value !== 'full') {
+    showGraph('full')
+    await nextTick()
+  }
+  id = id.trim()
+  if (graphHtml.value && currentViewerState.value.ids.includes(id)) {
+    sendExploration('select', { id })
+    sendExploration('center', { id })
+    return
+  }
+  void expandProtein(id, true)
+}
+
+function undoExpansion() {
+  if (!canControlGraph.value || expandingGraph.value || !currentViewerState.value.canUndo) return
+  sendExploration('undo')
+  explorationStatus.value = 'Se deshizo la última expansión de esta vista.'
+}
+
+function restartExploration() {
+  if (loadingGraph.value || expandingGraph.value) return
+  cancelExpansion()
+  clearGraph()
+  proteinId.value = ''
+  globalProteinId.value = ''
+  explorationStatus.value = ''
+}
+
+watch(() => selectedProtein.value?.id, () => {
+  expansionAmount.value = Math.max(1, Math.min(10, remainingConnections.value))
+})
+watch(remainingConnections, remaining => {
+  if (typeof expansionAmount.value === 'number' && expansionAmount.value > remaining) {
+    expansionAmount.value = Math.max(1, remaining)
+  }
+})
+watch(activeGraph, cancelExpansion)
+watch(fullGraphHtml, () => { viewerStates.value.full = { ids: [], edges: [], connected: [], canUndo: false } })
+watch(subgraphHtml, () => { viewerStates.value.subgraph = { ids: [], edges: [], connected: [], canUndo: false } })
+
+const showPathResults = computed(() => activeGraph.value === 'subgraph' && subgraphKind.value === 'shortest-path')
 const { annotation, loadingAnnotation, annotationError, retryAnnotation } = useGeneAnnotation(
-  computed(() => mode.value === 'neighborhood' ? selectedProtein.value?.id : undefined),
+  computed(() => selectedProtein.value?.id),
 )
 const showFullGeneSummary = ref(false)
 watch(() => selectedProtein.value?.id, () => { showFullGeneSummary.value = false })
@@ -60,6 +197,7 @@ const neighborsPerPage = 25
 const filteredNeighbors = computed(() => {
   const query = neighborQuery.value.trim().toLowerCase()
   return (selectedProtein.value?.neighbors ?? []).filter(id => id.toLowerCase().includes(query))
+    .sort((a, b) => Number(connectedNeighborIds.value.has(b)) - Number(connectedNeighborIds.value.has(a)))
 })
 const neighborPageCount = computed(() => Math.ceil(filteredNeighbors.value.length / neighborsPerPage))
 const visibleNeighbors = computed(() => filteredNeighbors.value.slice(
@@ -108,7 +246,7 @@ const viewerReady = computed(() => activeGraph.value === 'full' ? fullViewerRead
 const loadingGraph = computed(() => generatingGraph.value || (!!graphHtml.value && !viewerReady.value))
 const canControlGraph = computed(() => !!graphHtml.value && viewerReady.value && !loadingGraph.value)
 
-function controlGraph(action: 'zoom-in' | 'zoom-out' | 'fit' | 'resize') {
+function controlGraph(action: 'zoom-in' | 'zoom-out' | 'fit' | 'resize' | 'download') {
   if (!canControlGraph.value) return
   const frame = activeGraph.value === 'full' ? graphFrame.value : subgraphFrame.value
   frame?.contentWindow?.postMessage({ type: 'prote-prote:graph-control', action }, '*')
@@ -176,15 +314,17 @@ watch(subgraphHtml, (html, _, onCleanup) => {
 function syncNodeHighlights() {
   const message = {
     type: 'prote-prote:highlight-proteins',
-    origin: mode.value === 'shortest-path' ? origin.value.trim() : proteinId.value.trim(),
+    origin: mode.value === 'shortest-path' ? origin.value.trim() : '',
     destination: mode.value === 'shortest-path' ? destination.value.trim() : '',
   }
-  graphFrame.value?.contentWindow?.postMessage(message, '*')
-  subgraphFrame.value?.contentWindow?.postMessage(message, '*')
+  graphFrame.value?.contentWindow?.postMessage({ ...message, selected: fullProteinDetails.value?.id ?? '', pickingPath: mode.value === 'shortest-path' }, '*')
+  subgraphFrame.value?.contentWindow?.postMessage({ ...message, selected: subgraphProteinDetails.value?.id ?? '', pickingPath: mode.value === 'shortest-path' && subgraphKind.value === 'neighborhood' }, '*')
 }
 
-watch([mode, origin, destination, proteinId], syncNodeHighlights, { flush: 'post' })
+watch([mode, origin, destination, proteinId, fullProteinDetails, subgraphProteinDetails], syncNodeHighlights, { flush: 'post' })
 watch(() => dataset.value.name, () => {
+  cancelExpansion()
+  globalProteinId.value = ''
   proteinId.value = ''
   origin.value = ''
   destination.value = ''
@@ -194,17 +334,55 @@ function onViewerMessage(event: MessageEvent) {
   const fromFull = event.source === graphFrame.value?.contentWindow
   const fromSubgraph = event.source === subgraphFrame.value?.contentWindow
   if (!fromFull && !fromSubgraph) return
+  const channel = fromFull ? 'full' : 'subgraph'
+  const fromActive = channel === activeGraph.value
+  if (event.data?.type === 'prote-prote:graph-state') {
+    const data = event.data
+    if (!Array.isArray(data.ids) || !data.ids.every((id: unknown) => typeof id === 'string') || !Array.isArray(data.visibleNeighbors) || !data.visibleNeighbors.every((id: unknown) => typeof id === 'string')) return
+    const previous = viewerStates.value[channel]
+    const edgePairs = Array.isArray(data.edges) && data.edges.every((pair: unknown) => Array.isArray(pair) && pair.length === 2 && pair.every(id => typeof id === 'string'))
+      ? data.edges as [string, string][] : previous.edges
+    viewerStates.value[channel] = { ids: data.ids, edges: edgePairs, connected: data.visibleNeighbors, canUndo: data.canUndo === true }
+    if (fromFull) fullGraphNodeCount.value = data.ids.length
+    if (data.requestId === expansionRequest && fromActive) {
+      expandingGraph.value = false
+      window.clearTimeout(expansionTimeout)
+      explorationStatus.value = 'Red actualizada. Puedes continuar desde cualquier proteína.'
+      syncNodeHighlights()
+    }
+    return
+  }
+  if (event.data?.type === 'prote-prote:graph-image') {
+    if (!fromActive || typeof event.data.image !== 'string' || !event.data.image.startsWith('data:image/png;base64,')) return
+    const anchor = document.createElement('a')
+    anchor.href = event.data.image
+    anchor.download = 'red-explorada.png'
+    anchor.click()
+    return
+  }
+  if (event.data?.type === 'prote-prote:protein-cleared') {
+    if (!fromActive) return
+    if (fromFull) fullProteinDetails.value = null
+    else subgraphProteinDetails.value = null
+    viewerStates.value[channel].connected = []
+    proteinId.value = ''
+    return
+  }
   if (event.data?.type === 'prote-prote:protein-selected') {
     if (generatingGraph.value || (activeGraph.value === 'full' ? !fromFull : !fromSubgraph)) return
     const details = event.data.details
     const id = event.data.id ?? details?.id
     if (typeof id !== 'string' || !id) return
     if (mode.value === 'neighborhood') proteinId.value = id
-    else if (!origin.value.trim() || destination.value.trim()) {
-      origin.value = id
-      destination.value = ''
-    } else if (id !== origin.value.trim()) destination.value = id
+    else if (fromFull || subgraphKind.value === 'neighborhood') {
+      if (!origin.value.trim() || destination.value.trim()) {
+        origin.value = id
+        destination.value = ''
+      } else if (id !== origin.value.trim()) destination.value = id
+    }
     if (!details || typeof details.id !== 'string' || typeof details.degree !== 'number' || !Array.isArray(details.neighbors) || !details.neighbors.every((id: unknown) => typeof id === 'string') || typeof details.component !== 'string' || typeof details.component_size !== 'number') return
+    viewerStates.value[channel].connected = Array.isArray(event.data.visible_neighbors)
+      ? event.data.visible_neighbors.filter((id: unknown) => typeof id === 'string') : []
     if (fromFull) fullProteinDetails.value = details
     else subgraphProteinDetails.value = details
     return
@@ -216,6 +394,10 @@ function onViewerMessage(event: MessageEvent) {
     subgraphViewerReady.value = true
   }
   syncNodeHighlights()
+  const viewer = event.source as Window
+  viewer.postMessage({ type: 'prote-prote:exploration', action: 'state' }, '*')
+  const selected = fromFull ? fullProteinDetails.value : subgraphProteinDetails.value
+  if (selected) viewer.postMessage({ type: 'prote-prote:exploration', action: 'select', id: selected.id }, '*')
   if (activeGraph.value === 'full' ? fromFull : fromSubgraph) fitGraph()
 }
 
@@ -226,6 +408,7 @@ onMounted(() => {
   if (graphStage.value) resizeObserver.observe(graphStage.value)
 })
 onBeforeUnmount(() => {
+  cancelExpansion()
   window.removeEventListener('message', onViewerMessage)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   resizeObserver?.disconnect()
@@ -238,7 +421,7 @@ watch(nodeLimit, (limit) => {
 
 function requestGraph(confirmInteractive = false) {
   const limit = nodeLimit.value
-  if (loadingGraph.value || typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1) return
+  if (loadingGraph.value || expandingGraph.value || typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1) return
 
   if (interactive.value && limit > interactiveLimit && !confirmInteractive) {
     loadWarning.value?.showModal()
@@ -246,33 +429,61 @@ function requestGraph(confirmInteractive = false) {
   }
 
   loadWarning.value?.close()
+  cancelExpansion()
+  explorationStatus.value = ''
   generatedNodeLimit.value = limit
   generatedInteractive.value = interactive.value
   void generateGraph(dataset.value, limit, interactive.value, randomMode.value)
 }
 
-async function requestSubgraph() {
+async function requestSubgraph(scope: 'sample' | 'dataset' = 'sample') {
   const id = proteinId.value.trim()
-  if (loadingGraph.value || !hasFullGraph.value || !id || generatedNodeLimit.value === null || !Number.isInteger(distanceLevel.value) || distanceLevel.value < 1 || distanceLevel.value > 3) return
+  if (loadingGraph.value || expandingGraph.value || !id || !Number.isInteger(distanceLevel.value) || distanceLevel.value < 1 || distanceLevel.value > 3) return
+  const globalScope = scope === 'dataset'
+  if (!globalScope && !hasFullGraph.value) {
+    graphError.value = 'Genera una red muestra o elige explorar en todo el dataset.'
+    return
+  }
+  const original = viewerStates.value.full
+  if (!globalScope && fullGraphHtml.value && !original.ids.includes(id)) {
+    graphError.value = 'La proteína no está en la red muestra. También puedes elegir Todo el dataset.'
+    return
+  }
   const distance = distanceLevel.value
-  if (await generateSubgraph(dataset.value, id, distance, generatedNodeLimit.value, generatedInteractive.value)) {
+  const budget = globalScope ? neighborhoodNodeBudget.value : generatedNodeLimit.value ?? 100
+  const snapshot = !globalScope && fullGraphHtml.value ? { nodes: [...original.ids], edges: [...original.edges] } : undefined
+  if (await generateSubgraph(dataset.value, id, distance, budget, true, snapshot, globalScope)) {
+    generatedNeighborhoodScope.value = scope
     generatedSubgraphProtein.value = id
     generatedSubgraphDistance.value = distance
   }
 }
 
 function requestGraphDownload() {
+  if (graphHtml.value) { controlGraph('download'); return }
   if (generatedNodeLimit.value === null) return
   void downloadGraph(dataset.value, generatedNodeLimit.value, generatedSubgraphProtein.value, generatedSubgraphDistance.value)
 }
 
-function requestShortestPath() {
+function requestShortestPath(scope: 'sample' | 'dataset' = 'sample') {
   const start = origin.value.trim()
   const end = destination.value.trim()
-  if (loadingGraph.value || !hasFullGraph.value || !start || !end || generatedNodeLimit.value === null) return
+  if (loadingGraph.value || expandingGraph.value || !start || !end) return
+  const globalScope = scope === 'dataset'
+  if (!globalScope && !hasFullGraph.value) {
+    graphError.value = 'Genera una red muestra o elige buscar en todo el dataset.'
+    return
+  }
+  const original = viewerStates.value.full
+  if (!globalScope && fullGraphHtml.value && (!original.ids.includes(start) || !original.ids.includes(end))) {
+    graphError.value = 'Ambas proteínas deben estar en la red muestra. También puedes elegir Todo el dataset.'
+    return
+  }
+  const snapshot = !globalScope && fullGraphHtml.value ? { nodes: [...original.ids], edges: [...original.edges] } : undefined
   queriedOrigin.value = start
   queriedDestination.value = end
-  void generateShortestPath(dataset.value, start, end, generatedNodeLimit.value, generatedInteractive.value)
+  queriedPathScope.value = scope
+  void generateShortestPath(dataset.value, start, end, generatedNodeLimit.value ?? 100, true, globalScope, snapshot)
 }
 
 function swapProteins() {
@@ -290,7 +501,8 @@ function resetPath() {
   pathResult.value = null
   pathStatus.value = 'Sin consulta'
   graphError.value = ''
-  showGraph('full')
+  if (hasFullGraph.value) showGraph('full')
+  else clearGraph()
 }
 
 function closePicker() {
@@ -299,6 +511,7 @@ function closePicker() {
 }
 
 function selectDataset(option: Dataset) {
+  if (expandingGraph.value) return
   if (option.name !== dataset.value.name) clearGraph()
   dataset.value = option
   closePicker()
@@ -319,40 +532,66 @@ function dismissPickerOnBlur(event: FocusEvent) {
         <section class="glass-panel parameter-section" aria-labelledby="prepare-network-title">
           <BackToMenu @back="emit('back')" />
           <h2 id="prepare-network-title">1. Preparar red</h2>
-          <label class="field-label" for="node-limit">Límite máximo de nodos</label>
-          <input id="node-limit" class="protein-input" type="number" min="1" placeholder="100" v-model.number="nodeLimit" />
-          <label class="field-label interactive-option">
-            <input v-model="interactive" type="checkbox" />
-            Modo interactivo
-          </label>
-          <div class="random-option">
-            <label class="field-label interactive-option">
-              <input :checked="randomMode" type="checkbox" @change="requestRandomMode" />
-              Modo aleatorio
-            </label>
-          </div>
-          <button
-            class="graph-action dataset-graph-action"
-            type="button"
-            :disabled="loadingGraph || typeof nodeLimit !== 'number' || !Number.isSafeInteger(nodeLimit) || nodeLimit < 1"
-            @click="requestGraph()"
-          >
-            {{ loadingGraph ? 'Generando…' : 'Generar grafo' }}
-          </button>
-
+          <details class="sample-preparation" open>
+            <summary>
+              <span>Generar red muestra</span>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+            </summary>
+            <div class="sample-fields">
+              <label class="field-label" for="node-limit">Límite máximo de nodos</label>
+              <input id="node-limit" class="protein-input" type="number" min="1" placeholder="100" v-model.number="nodeLimit" />
+              <label class="field-label interactive-option">
+                <input v-model="interactive" type="checkbox" />
+                Modo interactivo
+              </label>
+              <div class="random-option">
+                <label class="field-label interactive-option">
+                  <input :checked="randomMode" type="checkbox" @change="requestRandomMode" />
+                  Modo aleatorio
+                </label>
+              </div>
+              <button
+                class="graph-action dataset-graph-action"
+                type="button"
+                :disabled="loadingGraph || expandingGraph || typeof nodeLimit !== 'number' || !Number.isSafeInteger(nodeLimit) || nodeLimit < 1"
+                @click="requestGraph()"
+              >
+                {{ loadingGraph ? 'Generando…' : 'Generar red muestra' }}
+              </button>
+            </div>
+          </details>
+          <details class="sample-preparation">
+            <summary>
+              <span>Buscar en todo el dataset</span>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+            </summary>
+            <div class="sample-fields">
+              <ProteinSelector id="global-protein" v-model="globalProteinId" label="Identificador de proteína" :proteins="proteins" :disabled="loadingGraph || expandingGraph" placeholder="ID de proteína…" @select="searchGlobalProtein" @submit="searchGlobalProtein()" />
+              <button class="graph-action global-search-action" type="button" :disabled="loadingGraph || expandingGraph || !globalProteinId.trim()" @click="searchGlobalProtein()">Abrir proteína</button>
+              <p v-if="loadingProteins" class="path-hint" role="status">Cargando proteínas…</p>
+              <p v-if="proteinListError" class="path-hint" role="alert">{{ proteinListError }}</p>
+              <p class="path-hint">Abre sus conexiones sin generar una muestra primero.</p>
+            </div>
+          </details>
+          <template v-if="graphHtml">
+            <p class="exploration-count">{{ formatCount(currentViewerState.ids.length) }} proteínas visibles</p>
+            <div class="exploration-tools">
+              <button type="button" :disabled="!canControlGraph || !selectedProtein || expandingGraph" @click="sendExploration('center', { id: selectedProtein?.id })">Centrar selección</button>
+              <button type="button" :disabled="loadingGraph || expandingGraph" @click="restartExploration">Reiniciar</button>
+            </div>
+          </template>
+          <p v-if="explorationStatus" class="path-hint" role="status">{{ explorationStatus }}</p>
         </section>
 
         <section class="glass-panel parameter-section" aria-labelledby="explore-network-title">
           <h2 id="explore-network-title">2. Explorar entorno</h2>
-          <p v-if="loadingProteins" class="path-hint" role="status">Cargando proteínas…</p>
-          <p v-if="proteinListError" class="path-hint" role="alert">{{ proteinListError }}</p>
           <div class="mode-switch" aria-label="Modo de exploración">
-            <button type="button" :aria-pressed="mode === 'neighborhood'" @click="mode = 'neighborhood'">Explorar entorno</button>
-            <button type="button" :aria-pressed="mode === 'shortest-path'" @click="mode = 'shortest-path'">Camino más corto</button>
+            <button type="button" :disabled="expandingGraph" :aria-pressed="mode === 'neighborhood'" @click="mode = 'neighborhood'">Explorar entorno</button>
+            <button type="button" :disabled="expandingGraph" :aria-pressed="mode === 'shortest-path'" @click="mode = 'shortest-path'">Camino más corto</button>
           </div>
 
           <div v-show="mode === 'neighborhood'" class="mode-fields">
-            <ProteinSelector id="protein-id" v-model="proteinId" label="Identificador de proteína" :proteins="proteins" placeholder="Buscar proteína…" />
+            <ProteinSelector id="protein-id" v-model="proteinId" label="Consulta de entorno" :proteins="proteins" placeholder="Buscar proteína…" @submit="requestSubgraph()" />
 
             <div class="hop-options" role="group" aria-label="Distancia máxima" aria-describedby="distance-description">
               <button
@@ -364,25 +603,27 @@ function dismissPickerOnBlur(event: FocusEvent) {
               >{{ level }} {{ level === 1 ? 'salto' : 'saltos' }}</button>
             </div>
             <p id="distance-description" class="distance-description">
-              {{ distanceLevel === 1 ? 'Incluye los vecinos conectados directamente.' : `Incluye vecinos hasta a ${distanceLevel === 2 ? 'dos' : 'tres'} conexiones de distancia.` }}
+              Hasta {{ distanceLevel }} {{ distanceLevel === 1 ? 'salto' : 'saltos' }} desde la proteína elegida.
             </p>
 
-            <button class="graph-action neighborhood-action" type="button" :disabled="loadingGraph || !hasFullGraph || !proteinId.trim()" @click="requestSubgraph">
+            <button class="graph-action neighborhood-action" type="button" :disabled="loadingGraph || expandingGraph || !hasFullGraph || !proteinId.trim()" @click="requestSubgraph('sample')">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" /></svg>
-              {{ generatingGraph ? 'Generando…' : 'Ver entorno' }}
+              {{ generatingGraph ? 'Generando…' : 'Ver entorno en muestra' }}
             </button>
+            <button class="graph-action neighborhood-action dataset-environment-action" type="button" :disabled="loadingGraph || expandingGraph || !proteinId.trim()" :title="`Explora todo el dataset y muestra hasta ${formatCount(neighborhoodNodeBudget)} proteínas`" @click="requestSubgraph('dataset')">Ver en todo el dataset</button>
           </div>
 
           <div v-show="mode === 'shortest-path'" class="mode-fields">
-            <ProteinSelector id="origin-protein" v-model="origin" label="Proteína de origen (azul)" :proteins="proteins" placeholder="Buscar origen…" />
+            <ProteinSelector id="origin-protein" v-model="origin" label="Proteína de origen (morado)" :proteins="proteins" placeholder="Buscar origen…" />
             <button class="swap-button" type="button" aria-label="Intercambiar origen y destino" @click="swapProteins">
               <span aria-hidden="true">⇅</span>
             </button>
             <ProteinSelector id="destination-protein" v-model="destination" label="Proteína de destino (verde)" :proteins="proteins" placeholder="Buscar destino…" />
-            <button class="graph-action" type="button" :disabled="loadingGraph || !hasFullGraph || !origin.trim() || !destination.trim()" @click="requestShortestPath">
-              {{ generatingGraph ? 'Buscando…' : 'Encontrar camino' }}
+            <button class="graph-action neighborhood-action" type="button" :disabled="loadingGraph || expandingGraph || !hasFullGraph || !origin.trim() || !destination.trim()" @click="requestShortestPath('sample')">
+              {{ generatingGraph ? 'Buscando…' : 'Encontrar camino en muestra' }}
             </button>
-            <p class="path-hint">Selecciona dos nodos: origen azul y destino verde. Un tercer clic inicia otra pareja.</p>
+            <button class="graph-action neighborhood-action dataset-environment-action" type="button" :disabled="loadingGraph || expandingGraph || !origin.trim() || !destination.trim()" @click="requestShortestPath('dataset')">Encontrar en todo el dataset</button>
+            <p v-if="!showPathResults && pathStatus !== 'Sin consulta'" class="path-hint" role="status">{{ pathStatus }}</p>
           </div>
         </section>
       </aside>
@@ -397,7 +638,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
                 type="button"
                 :aria-expanded="pickerOpen"
                 :title="`Dataset ${dataset.name}`"
-                :disabled="loadingGraph"
+                :disabled="loadingGraph || expandingGraph"
                 aria-controls="visualizer-dataset-picker"
                 @click="pickerOpen = !pickerOpen"
               >
@@ -411,7 +652,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
                     :key="option.name"
                     type="button"
                     :aria-pressed="option.name === dataset.name"
-                    :disabled="loadingGraph"
+                    :disabled="loadingGraph || expandingGraph"
                     @click="selectDataset(option)"
                   >{{ option.name }}</button>
                 </div>
@@ -421,13 +662,6 @@ function dismissPickerOnBlur(event: FocusEvent) {
               <span v-if="dataset.nodes !== undefined">{{ formatCount(dataset.nodes) }} proteínas</span>
               <span v-if="dataset.edges !== undefined">{{ formatCount(dataset.edges) }} asociaciones</span>
             </div>
-            <p v-if="hasFullGraph" class="sample-notice" role="status">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10v1" /></svg>
-              <span>
-                {{ fullGraphNodeCount != null ? `Muestra: ${formatCount(fullGraphNodeCount)} proteínas` : `Muestra de hasta ${formatCount(generatedNodeLimit ?? 0)} proteínas` }} ·
-                {{ fullGraphNodeCount != null && fullGraphNodeCount === dataset.nodes ? 'Incluye todo el dataset.' : 'Vista parcial del dataset.' }}
-              </span>
-            </p>
           </div>
           <div class="graph-toolbar" aria-label="Herramientas del grafo">
             <button type="button" aria-label="Acercar" :disabled="!canControlGraph" @click="controlGraph('zoom-in')">
@@ -447,18 +681,25 @@ function dismissPickerOnBlur(event: FocusEvent) {
               type="button"
               aria-label="Descargar grafo como PNG"
               :title="downloadingGraph ? 'Preparando imagen PNG…' : 'Descargar la vista actual como PNG'"
-              :disabled="!hasFullGraph || generatingGraph || downloadingGraph"
+              :disabled="(!hasFullGraph && !hasSubgraph) || loadingGraph || expandingGraph || downloadingGraph"
               @click="requestGraphDownload"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
             </button>
           </div>
+          <p v-if="hasFullGraph || hasSubgraph" class="sample-notice" role="status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10v1" /></svg>
+            <span>
+              {{ graphHtml ? `Vista actual: ${formatCount(currentViewerState.ids.length)} proteínas` : `Muestra: ${formatCount(fullGraphNodeCount ?? generatedNodeLimit ?? 0)} proteínas` }} ·
+              {{ (graphHtml ? currentViewerState.ids.length : fullGraphNodeCount) === dataset.nodes ? 'Incluye todo el dataset.' : 'Vista parcial del dataset.' }}
+            </span>
+          </p>
         </header>
 
 
         <div v-if="hasSubgraph" class="graph-view-switch" aria-label="Vista del grafo">
-          <button type="button" :disabled="generatingGraph" :aria-pressed="activeGraph === 'full'" @click="showGraph('full')">Grafo original</button>
-          <button type="button" :disabled="generatingGraph" :aria-pressed="activeGraph === 'subgraph'" @click="showGraph('subgraph')">{{ subgraphKind === 'shortest-path' ? 'Camino más corto' : 'Subgrafo' }}</button>
+          <button v-if="hasFullGraph" type="button" :disabled="generatingGraph || expandingGraph" :aria-pressed="activeGraph === 'full'" @click="showGraph('full')">Grafo original</button>
+          <button type="button" :disabled="generatingGraph || expandingGraph" :aria-pressed="activeGraph === 'subgraph'" @click="showGraph('subgraph')">{{ subgraphKind === 'shortest-path' ? 'Camino más corto' : `Subgrafo · ${generatedNeighborhoodScope === 'sample' ? 'Muestra' : 'Dataset'}` }}</button>
         </div>
 
         <p v-if="graphError" role="alert">{{ graphError }}</p>
@@ -503,83 +744,96 @@ function dismissPickerOnBlur(event: FocusEvent) {
         </div>
         <div v-else class="empty-graph">
           <img class="mascot" src="/images/mascot.png" alt="Mascota de Prote-Prote" />
-          <h2>Visualiza la red de proteínas</h2>
-          <p>
-            Elige el límite de nodos y pulsa <strong>Generar grafo</strong>.
-            Marca <strong>Modo interactivo</strong> para acercarte y leer los IDs,
-            o desmárcalo para ver una imagen.
-          </p>
-          <p v-if="mode === 'neighborhood'">
-            Genera el grafo primero. Luego, ingresa el ID de una proteína incluida y elige la distancia máxima del subgrafo.
-          </p>
-          <p v-else>Genera el grafo primero. Luego, ingresa dos proteínas incluidas para consultar su ruta más corta.</p>
+          <h2>Explora la red de proteínas</h2>
+          <p>Busca cualquier proteína del dataset para comenzar desde sus conexiones, o pulsa <strong>Generar red muestra</strong> para obtener una vista inicial.</p>
+          <p>Selecciona un nodo y agrega conexiones para continuar sin perder la red actual.</p>
         </div>
       </section>
 
-      <aside v-if="mode === 'neighborhood'" class="glass-panel details-panel">
-        <template v-if="selectedProtein">
-          <h2>Proteína {{ selectedProtein.id }}</h2>
-          <section class="gene-info" aria-label="Información del gen">
-            <p v-if="loadingAnnotation" class="gene-status" role="status">Consultando información del gen…</p>
-            <div v-else-if="annotationError">
-              <p class="gene-status" role="status">{{ annotationError }}</p>
-              <button class="gene-toggle" type="button" @click="retryAnnotation">Reintentar</button>
-            </div>
-            <template v-else-if="annotation">
-              <p v-if="annotation.symbol" class="gene-symbol">{{ annotation.symbol }}</p>
-              <p v-if="annotation.name" class="gene-name">{{ annotation.name }}</p>
-              <template v-if="annotation.summary">
-                <h3>Resumen del gen</h3>
-                <p class="gene-summary">{{ showFullGeneSummary ? annotation.summary : geneSummaryPreview }}</p>
-                <button v-if="annotation.summary.length > 280" class="gene-toggle" type="button" :aria-expanded="showFullGeneSummary" @click="showFullGeneSummary = !showFullGeneSummary">{{ showFullGeneSummary ? 'Ver menos' : 'Leer más' }}</button>
-              </template>
-              <p v-else class="gene-status">No hay un resumen disponible para este gen.</p>
-              <a class="gene-source" :href="`https://mygene.info/v3/gene/${encodeURIComponent(annotation.id)}?fields=symbol,name,summary`" target="_blank" rel="noopener noreferrer">Fuente: MyGene.info · texto original</a>
-            </template>
-            <p v-else class="gene-status">No se encontró información para este ID en MyGene.info. Se admiten identificadores de gen Entrez y Ensembl.</p>
-          </section>
+      <aside class="glass-panel details-panel">
+        <section v-if="showPathResults" class="path-results" aria-label="Resultados del camino">
+          <h2>Resultados del camino</h2>
           <dl class="protein-details">
-            <div><dt>Conexiones directas</dt><dd>{{ formatCount(selectedProtein.neighbors.length) }}</dd></div>
+            <div><dt>Búsqueda en</dt><dd>{{ queriedPathScope === 'sample' ? 'Red muestra' : 'Todo el dataset' }}</dd></div>
+            <div><dt>Proteína inicial</dt><dd>{{ pathStatus === 'Sin consulta' ? '--' : queriedOrigin }}</dd></div>
+            <div><dt>Proteína final</dt><dd>{{ pathStatus === 'Sin consulta' ? '--' : queriedDestination }}</dd></div>
+            <div><dt>Longitud mínima</dt><dd>{{ pathResult?.length ?? '--' }}</dd></div>
+            <div><dt>Proteínas en la ruta</dt><dd>{{ pathResult ? pathResult.path.length : '--' }}</dd></div>
+            <div><dt>Algoritmo</dt><dd>{{ pathStatus === 'Sin consulta' ? '--' : 'BFS' }}</dd></div>
+            <div><dt>Tiempo BFS</dt><dd>{{ pathResult ? `${pathResult.elapsed_ms.toFixed(3)} ms` : '--' }}</dd></div>
+            <div><dt>Estado</dt><dd role="status">{{ pathStatus }}</dd></div>
           </dl>
-          <details :key="`${activeGraph}-${selectedProtein.id}`" class="neighbors-section">
-            <summary>
-              <span>Ver proteínas conectadas</span>
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
-            </summary>
-            <div class="neighbors-content">
-            <template v-if="selectedProtein.neighbors.length">
-              <label class="field-label" for="neighbor-search">Buscar vecino por ID</label>
-              <input id="neighbor-search" v-model="neighborQuery" class="protein-input" type="search" placeholder="Filtrar vecinos…" autocomplete="off" />
-              <p class="neighbors-count" role="status">{{ formatCount(filteredNeighbors.length) }} de {{ formatCount(selectedProtein.neighbors.length) }} vecinos</p>
-              <ul v-if="visibleNeighbors.length" class="neighbors-list" aria-label="Vecinos encontrados" tabindex="0">
-                <li v-for="(neighbor, index) in visibleNeighbors" :key="`${neighbor}-${index}`">{{ neighbor }}</li>
-              </ul>
-              <p v-else class="neighbors-empty">No se encontraron vecinos con ese ID.</p>
-              <nav v-if="neighborPageCount > 1" class="neighbors-pagination" aria-label="Páginas de vecinos">
-                <button type="button" :disabled="neighborPage === 0" @click="neighborPage--">Anterior</button>
-                <span>{{ neighborPage + 1 }} / {{ neighborPageCount }}</span>
-                <button type="button" :disabled="neighborPage + 1 >= neighborPageCount" @click="neighborPage++">Siguiente</button>
-              </nav>
-            </template>
-            <p v-else class="neighbors-empty">Esta proteína no tiene vecinos.</p>
+          <p v-if="pathResult?.path.length" class="path-route">{{ pathResult.path.join(' → ') }}</p>
+          <button class="reset-path" type="button" :disabled="loadingGraph" @click="resetPath">Nueva consulta</button>
+        </section>
+        <section aria-label="Detalles de la proteína seleccionada">
+          <template v-if="selectedProtein">
+            <h2>Proteína {{ selectedProtein.id }}</h2>
+            <section class="gene-info" aria-label="Información del gen">
+              <p v-if="loadingAnnotation" class="gene-status" role="status">Consultando información del gen…</p>
+              <div v-else-if="annotationError">
+                <p class="gene-status" role="status">{{ annotationError }}</p>
+                <button class="gene-toggle" type="button" @click="retryAnnotation">Reintentar</button>
+              </div>
+              <template v-else-if="annotation">
+                <p v-if="annotation.symbol" class="gene-symbol">{{ annotation.symbol }}</p>
+                <p v-if="annotation.name" class="gene-name">{{ annotation.name }}</p>
+                <template v-if="annotation.summary">
+                  <h3>Resumen del gen</h3>
+                  <p class="gene-summary">{{ showFullGeneSummary ? annotation.summary : geneSummaryPreview }}</p>
+                  <button v-if="annotation.summary.length > 280" class="gene-toggle" type="button" :aria-expanded="showFullGeneSummary" @click="showFullGeneSummary = !showFullGeneSummary">{{ showFullGeneSummary ? 'Ver menos' : 'Leer más' }}</button>
+                </template>
+                <p v-else class="gene-status">No hay un resumen disponible para este gen.</p>
+                <a class="gene-source" :href="`https://mygene.info/v3/gene/${encodeURIComponent(annotation.id)}?fields=symbol,name,summary`" target="_blank" rel="noopener noreferrer">Fuente: MyGene.info · texto original</a>
+              </template>
+              <p v-else class="gene-status">No se encontró información para este ID en MyGene.info. Se admiten identificadores de gen Entrez y Ensembl.</p>
+            </section>
+            <dl class="protein-details">
+              <div><dt>Conexiones directas</dt><dd>{{ formatCount(selectedProtein.neighbors.length) }}</dd></div>
+              <div><dt>Conexiones visibles</dt><dd>{{ formatCount(connectedNeighborIds.size) }}</dd></div>
+            </dl>
+            <details :key="`${activeGraph}-${selectedProtein.id}`" class="neighbors-section">
+              <summary>
+                <span>Ver proteínas conectadas</span>
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+              </summary>
+              <div class="neighbors-content">
+              <template v-if="selectedProtein.neighbors.length">
+                <label class="field-label" for="neighbor-search">Buscar vecino por ID</label>
+                <input id="neighbor-search" v-model="neighborQuery" class="protein-input" type="search" placeholder="Filtrar vecinos…" autocomplete="off" />
+                <p class="neighbors-count" role="status">{{ formatCount(filteredNeighbors.length) }} de {{ formatCount(selectedProtein.neighbors.length) }} vecinos</p>
+                <ul v-if="visibleNeighbors.length" class="neighbors-list" aria-label="Vecinos encontrados" tabindex="0">
+                  <li v-for="(neighbor, index) in visibleNeighbors" :key="`${neighbor}-${index}`">
+                    <button type="button" @click="searchGlobalProtein(neighbor)" :disabled="loadingGraph || expandingGraph" :aria-label="`Explorar proteína ${neighbor}`">{{ neighbor }}</button>
+                    <span v-if="connectedNeighborIds.has(neighbor)" class="neighbor-visible">visible</span>
+                  </li>
+                </ul>
+                <p v-else class="neighbors-empty">No se encontraron vecinos con ese ID.</p>
+                <nav v-if="neighborPageCount > 1" class="neighbors-pagination" aria-label="Páginas de vecinos">
+                  <button type="button" :disabled="neighborPage === 0" @click="neighborPage--">Anterior</button>
+                  <span>{{ neighborPage + 1 }} / {{ neighborPageCount }}</span>
+                  <button type="button" :disabled="neighborPage + 1 >= neighborPageCount" @click="neighborPage++">Siguiente</button>
+                </nav>
+              </template>
+              <p v-else class="neighbors-empty">Esta proteína no tiene vecinos.</p>
+              </div>
+            </details>
+            <div v-if="!showPathResults" class="expansion-actions">
+              <template v-if="graphHtml && activeGraph === 'full'">
+                <label class="field-label" for="expansion-amount">Conexiones a agregar (máx. 20)</label>
+                <input id="expansion-amount" v-model.number="expansionAmount" class="protein-input" type="number" min="1" :max="Math.max(1, Math.min(maxExpansionConnections, remainingConnections))" :disabled="expandingGraph || !remainingConnections" />
+                <p class="path-hint">{{ remainingConnections ? `${formatCount(remainingConnections)} conexiones por mostrar.` : 'Todas sus conexiones están visibles.' }}</p>
+                <button class="graph-action" type="button" :disabled="!canControlGraph || expandingGraph || !remainingConnections || typeof expansionAmount !== 'number' || !Number.isSafeInteger(expansionAmount) || expansionAmount < 1 || expansionAmount > remainingConnections || expansionAmount > maxExpansionConnections" @click="expandProtein(selectedProtein.id)">
+                  {{ expandingGraph ? 'Agregando…' : `Agregar ${expansionAmount ?? 0} ${expansionAmount === 1 ? 'conexión' : 'conexiones'}` }}
+                </button>
+                <button class="reset-path" type="button" :disabled="!canControlGraph || expandingGraph || !currentViewerState.canUndo" @click="undoExpansion">Deshacer última expansión</button>
+              </template>
+              <p v-else-if="activeGraph === 'subgraph'" class="path-hint">Agrega conexiones desde el grafo original. El subgrafo conserva únicamente sus conexiones visibles.</p>
+              <p v-else class="path-hint">Abre una proteína desde la búsqueda global para explorar sus conexiones en modo interactivo.</p>
             </div>
-          </details>
-        </template>
-        <p v-else class="details-intro">Haz clic en un nodo del grafo para ver los detalles de la proteína.</p>
-      </aside>
-      <aside v-else class="glass-panel details-panel">
-        <h2>Resultados del camino</h2>
-        <dl class="protein-details">
-          <div><dt>Proteína inicial</dt><dd>{{ pathStatus === 'Sin consulta' ? '--' : queriedOrigin }}</dd></div>
-          <div><dt>Proteína final</dt><dd>{{ pathStatus === 'Sin consulta' ? '--' : queriedDestination }}</dd></div>
-          <div><dt>Longitud mínima</dt><dd>{{ pathResult?.length ?? '--' }}</dd></div>
-          <div><dt>Proteínas en la ruta</dt><dd>{{ pathResult ? pathResult.path.length : '--' }}</dd></div>
-          <div><dt>Algoritmo</dt><dd>{{ pathStatus === 'Sin consulta' ? '--' : 'BFS' }}</dd></div>
-          <div><dt>Tiempo BFS</dt><dd>{{ pathResult ? `${pathResult.elapsed_ms.toFixed(3)} ms` : '--' }}</dd></div>
-          <div><dt>Estado</dt><dd role="status">{{ pathStatus }}</dd></div>
-        </dl>
-        <p v-if="pathResult?.path.length" class="path-route">{{ pathResult.path.join(' → ') }}</p>
-        <button class="reset-path" type="button" :disabled="loadingGraph" @click="resetPath">Nueva consulta</button>
+          </template>
+          <p v-else class="details-intro">Haz clic en un nodo del grafo para ver los detalles de la proteína.</p>
+        </section>
       </aside>
     </div>
     <dialog ref="randomWarning" class="load-warning" aria-labelledby="random-warning-title" aria-describedby="random-warning-message">
@@ -635,10 +889,9 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .graph-image { display: block; width: 100%; min-height: 0; max-height: 65dvh; flex: 1; object-fit: contain; }
 
 .graph-header {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 8px 16px;
   padding: clamp(10px, 1.5vw, 20px);
 }
@@ -797,6 +1050,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .distance-description { margin: 6px 0 14px; color: #34535e; font-size: 0.8rem; line-height: 1.4; }
 .neighborhood-action { display: flex; align-items: center; justify-content: center; gap: 8px; }
 .graph-action.neighborhood-action { width: 100%; }
+.graph-action.dataset-environment-action { margin-top: 8px; border: 1px solid #8aafbb; background: #e4f7fb; color: #164c5c; box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%); }
 .neighborhood-action svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 
 .graph-action {
@@ -851,6 +1105,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .graph-panel:fullscreen .graph-stage { min-height: 0; }
 .graph-panel:fullscreen .graph-image { max-height: calc(100dvh - 160px); }
 .sample-notice {
+  grid-column: 1 / -1;
   display: flex;
   align-items: flex-start;
   gap: 5px;
@@ -887,6 +1142,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .empty-graph p { max-width: 44ch; margin: clamp(8px, 1.6dvh, 20px) 0 0; font-size: clamp(1rem, 1.2vw, 1.2rem); line-height: 1.4; }
 
 .details-panel { overflow-y: auto; overscroll-behavior: contain; padding: clamp(10px, 2dvh, 22px) clamp(10px, 1.4vw, 22px); }
+.path-results { margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid rgb(43 100 104 / 25%); }
 .details-panel h2 { margin: 0 0 clamp(8px, 1.5dvh, 18px); font-size: clamp(1.25rem, 1.65vw, 1.75rem); font-weight: 700; line-height: 1.15; }
 .details-intro { margin: 0 0 clamp(8px, 1.5dvh, 18px); color: #34535e; font-size: clamp(0.95rem, 1.05vw, 1.12rem); line-height: 1.4; }
 .gene-info { margin: 0 0 16px; padding-bottom: 14px; border-bottom: 1px solid rgb(43 100 104 / 25%); }
@@ -934,4 +1190,25 @@ function dismissPickerOnBlur(event: FocusEvent) {
   .details-panel { max-height: 60dvh; }
   .details-panel { grid-column: auto; }
 }
+.sample-preparation { margin-top: 8px; border: 1px solid #96bdc8; border-radius: 11px; background: rgb(198 231 238 / 40%); }
+.sample-preparation summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px; font-size: 0.9rem; font-weight: 700; cursor: pointer; list-style: none; }
+.sample-preparation summary::-webkit-details-marker { display: none; }
+.sample-preparation summary:focus-visible { outline: 2px solid #08485d; outline-offset: 3px; border-radius: 10px; }
+.sample-preparation summary svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75; }
+.sample-preparation[open] summary svg { transform: rotate(180deg); }
+.sample-fields { display: flex; flex-direction: column; padding: 0 10px 10px; }
+.sample-fields .dataset-graph-action { margin-bottom: 0; }
+.global-search-action { margin-top: 12px; }
+.exploration-count { margin: 10px 0 8px; font-size: 0.85rem; font-weight: 700; }
+.exploration-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.exploration-tools button { border: 1px solid #8aafbb; border-radius: 8px; padding: 5px 8px; background: #e4f7fb; color: #164c5c; font: inherit; font-size: 0.8rem; cursor: pointer; }
+.exploration-tools button:disabled, .expansion-actions .reset-path:disabled { opacity: 0.5; cursor: not-allowed; }
+.expansion-actions { margin-top: 16px; padding-top: 14px; border-top: 1px solid rgb(43 100 104 / 25%); }
+.expansion-actions .field-label { display: block; }
+.expansion-actions .graph-action { display: block; width: 100%; }
+.expansion-actions .reset-path { width: 100%; margin-top: 8px; font-size: 0.8rem; }
+.neighbors-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.neighbors-list li button { min-width: 0; border: 0; padding: 0; background: transparent; color: #164c5c; text-align: left; overflow-wrap: anywhere; font: inherit; cursor: pointer; }
+.neighbors-list li button:hover { text-decoration: underline; }
+.neighbor-visible { flex: none; border-radius: 999px; padding: 2px 6px; background: rgb(32 164 100 / 15%); color: #165b3d; font-size: 0.7rem; }
 </style>
