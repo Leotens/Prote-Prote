@@ -1,5 +1,6 @@
 // Pause physics during the entrance animation, then let the whole network settle again.
 const expansionHistory = [];
+let neighborhoodExtraEdgeIds = [];
 let expansionInProgress = false;
 let expansionAnimation = 0;
 let physicsRestTimer;
@@ -75,6 +76,24 @@ window.addEventListener('message', function (event) {
   if (command.type !== 'prote-prote:exploration') return;
   if (command.action === 'select') { publishSelection(command.id); publishGraphState(); return; }
   if (command.action === 'state') { publishGraphState(); return; }
+  if (command.action === 'neighbor-edges') {
+    if (expansionInProgress) return;
+    if (command.enabled) {
+      const knownPairs = new Set(edges.get().map(edge => JSON.stringify([String(edge.from), String(edge.to)].sort())));
+      const additions = command.edges.filter(pair => !knownPairs.has(JSON.stringify(pair.slice().sort())))
+        .map((pair, index) => ({ id: 'neighborhood-extra:' + index, from: pair[0], to: pair[1] }));
+      if (!neighborhoodExtraEdgeIds.length) {
+        edges.add(additions);
+        neighborhoodExtraEdgeIds = additions.map(edge => edge.id);
+      }
+    } else {
+      edges.remove(neighborhoodExtraEdgeIds);
+      neighborhoodExtraEdgeIds = [];
+    }
+    resumeGraphPhysics();
+    publishGraphState();
+    return;
+  }
   if (command.action === 'center') {
     if (nodes.get(command.id)) network.focus(command.id, { scale: network.getScale(), animation: true });
     return;

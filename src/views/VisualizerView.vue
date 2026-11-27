@@ -17,6 +17,7 @@ const mode = ref<'neighborhood' | 'shortest-path'>('neighborhood')
 const origin = ref('')
 const destination = ref('')
 const generatedNeighborhoodScope = ref<'sample' | 'dataset'>('sample')
+const showNeighborConnections = ref(false)
 const queriedPathScope = ref<'sample' | 'dataset'>('sample')
 const proteinId = ref('')
 const distanceLevel = ref(2)
@@ -32,6 +33,7 @@ const {
   pathResult,
   pathStatus,
   subgraphKind,
+  neighborhoodInfo,
   generateShortestPath,
   fullGraphHtml,
   fullGraphImageUrl,
@@ -55,7 +57,6 @@ const viewerStates = ref<Record<'full' | 'subgraph', ViewerState>>({
   subgraph: { ids: [], edges: [], connected: [], canUndo: false },
 })
 const currentViewerState = computed(() => viewerStates.value[activeGraph.value])
-const neighborhoodNodeBudget = computed(() => typeof nodeLimit.value === 'number' && Number.isSafeInteger(nodeLimit.value) && nodeLimit.value > 0 ? nodeLimit.value : 100)
 const connectedNeighborIds = computed(() => new Set(currentViewerState.value.connected))
 const remainingConnections = computed(() => (selectedProtein.value?.neighbors ?? []).filter(id => !connectedNeighborIds.value.has(id)).length)
 const maxExpansionConnections = 20
@@ -160,6 +161,15 @@ function undoExpansion() {
   explorationStatus.value = 'Se deshizo la última expansión de esta vista.'
 }
 
+function toggleNeighborConnections(event: Event) {
+  if (!canControlGraph.value || !neighborhoodInfo.value) return
+  showNeighborConnections.value = (event.target as HTMLInputElement).checked
+  sendExploration('neighbor-edges', {
+    enabled: showNeighborConnections.value,
+    edges: neighborhoodInfo.value.extra_edges,
+  })
+}
+
 function restartExploration() {
   if (loadingGraph.value || expandingGraph.value) return
   cancelExpansion()
@@ -179,7 +189,10 @@ watch(remainingConnections, remaining => {
 })
 watch(activeGraph, cancelExpansion)
 watch(fullGraphHtml, () => { viewerStates.value.full = { ids: [], edges: [], connected: [], canUndo: false } })
-watch(subgraphHtml, () => { viewerStates.value.subgraph = { ids: [], edges: [], connected: [], canUndo: false } })
+watch(subgraphHtml, () => {
+  viewerStates.value.subgraph = { ids: [], edges: [], connected: [], canUndo: false }
+  showNeighborConnections.value = false
+})
 
 const showPathResults = computed(() => activeGraph.value === 'subgraph' && subgraphKind.value === 'shortest-path')
 const { annotation, loadingAnnotation, annotationError, retryAnnotation } = useGeneAnnotation(
@@ -450,7 +463,7 @@ async function requestSubgraph(scope: 'sample' | 'dataset' = 'sample') {
     return
   }
   const distance = distanceLevel.value
-  const budget = globalScope ? neighborhoodNodeBudget.value : generatedNodeLimit.value ?? 100
+  const budget = generatedNodeLimit.value ?? 100
   const snapshot = !globalScope && fullGraphHtml.value ? { nodes: [...original.ids], edges: [...original.edges] } : undefined
   if (await generateSubgraph(dataset.value, id, distance, budget, true, snapshot, globalScope)) {
     generatedNeighborhoodScope.value = scope
@@ -603,14 +616,14 @@ function dismissPickerOnBlur(event: FocusEvent) {
               >{{ level }} {{ level === 1 ? 'salto' : 'saltos' }}</button>
             </div>
             <p id="distance-description" class="distance-description">
-              Hasta {{ distanceLevel }} {{ distanceLevel === 1 ? 'salto' : 'saltos' }} desde la proteína elegida.
+              Hasta {{ distanceLevel }} {{ distanceLevel === 1 ? 'salto' : 'saltos' }}. En todo el dataset: máximo 150 proteínas por consulta.
             </p>
 
             <button class="graph-action neighborhood-action" type="button" :disabled="loadingGraph || expandingGraph || !hasFullGraph || !proteinId.trim()" @click="requestSubgraph('sample')">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" /></svg>
               {{ generatingGraph ? 'Generando…' : 'Ver entorno en muestra' }}
             </button>
-            <button class="graph-action neighborhood-action dataset-environment-action" type="button" :disabled="loadingGraph || expandingGraph || !proteinId.trim()" :title="`Explora todo el dataset y muestra hasta ${formatCount(neighborhoodNodeBudget)} proteínas`" @click="requestSubgraph('dataset')">Ver en todo el dataset</button>
+            <button class="graph-action neighborhood-action dataset-environment-action" type="button" :disabled="loadingGraph || expandingGraph || !proteinId.trim()" @click="requestSubgraph('dataset')">Ver en todo el dataset</button>
           </div>
 
           <div v-show="mode === 'shortest-path'" class="mode-fields">
@@ -701,6 +714,15 @@ function dismissPickerOnBlur(event: FocusEvent) {
           <button v-if="hasFullGraph" type="button" :disabled="generatingGraph || expandingGraph" :aria-pressed="activeGraph === 'full'" @click="showGraph('full')">Grafo original</button>
           <button type="button" :disabled="generatingGraph || expandingGraph" :aria-pressed="activeGraph === 'subgraph'" @click="showGraph('subgraph')">{{ subgraphKind === 'shortest-path' ? 'Camino más corto' : `Subgrafo · ${generatedNeighborhoodScope === 'sample' ? 'Muestra' : 'Dataset'}` }}</button>
         </div>
+
+        <section v-if="activeGraph === 'subgraph' && subgraphKind === 'neighborhood' && neighborhoodInfo?.node_limit" class="neighborhood-summary" aria-label="Alcance del entorno mostrado">
+          <p v-if="neighborhoodInfo.partial" class="neighborhood-partial" role="status">Entorno parcial: {{ formatCount(neighborhoodInfo.node_count) }} de {{ formatCount(neighborhoodInfo.total_node_count) }} proteínas. Se alcanzó el límite de {{ neighborhoodInfo.node_limit }}.</p>
+          <p v-else class="neighborhood-status" role="status">{{ formatCount(neighborhoodInfo.node_count) }} proteínas dentro de {{ neighborhoodInfo.requested_distance }} {{ neighborhoodInfo.requested_distance === 1 ? 'salto' : 'saltos' }}.</p>
+          <label v-if="neighborhoodInfo.extra_edges.length" class="neighbor-edges-option">
+            <input type="checkbox" :checked="showNeighborConnections" :disabled="!canControlGraph || expandingGraph" @change="toggleNeighborConnections" />
+            Mostrar conexiones entre vecinos ({{ formatCount(neighborhoodInfo.extra_edges.length) }})
+          </label>
+        </section>
 
         <p v-if="graphError" role="alert">{{ graphError }}</p>
         <div v-if="hasFullGraph || hasSubgraph || loadingGraph" ref="graphStage" class="graph-stage">
@@ -828,7 +850,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
                 </button>
                 <button class="reset-path" type="button" :disabled="!canControlGraph || expandingGraph || !currentViewerState.canUndo" @click="undoExpansion">Deshacer última expansión</button>
               </template>
-              <p v-else-if="activeGraph === 'subgraph'" class="path-hint">Agrega conexiones desde el grafo original. El subgrafo conserva únicamente sus conexiones visibles.</p>
+              <p v-else-if="activeGraph === 'subgraph'" class="path-hint">{{ generatedNeighborhoodScope === 'dataset' ? 'Abre esta proteína desde la búsqueda global para continuar agregando conexiones de 10 en 10.' : 'Agrega conexiones desde el grafo original. El subgrafo conserva únicamente sus conexiones visibles.' }}</p>
               <p v-else class="path-hint">Abre una proteína desde la búsqueda global para explorar sus conexiones en modo interactivo.</p>
             </div>
           </template>
@@ -1115,6 +1137,10 @@ function dismissPickerOnBlur(event: FocusEvent) {
   line-height: 1.4;
 }
 .sample-notice svg { width: 14px; height: 14px; flex: none; margin-top: 1px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.neighborhood-summary { margin: 0 14px 10px; padding: 8px 10px; border: 1px solid #96bdc8; border-radius: 10px; background: rgb(228 247 251 / 45%); color: #164c5c; font-size: 0.78rem; line-height: 1.4; }
+.neighborhood-partial, .neighborhood-status { margin: 0; }
+.neighbor-edges-option { display: flex; align-items: center; gap: 7px; margin-top: 6px; cursor: pointer; }
+.neighbor-edges-option input { margin: 0; accent-color: #16566d; }
 .graph-view-switch { display: flex; align-self: center; gap: 4px; margin: 0 12px 8px; padding: 3px; border: 1px solid #96bdc8; border-radius: 11px; background: #c6e7ee; }
 .graph-view-switch button { border: 0; border-radius: 8px; padding: 5px 12px; background: transparent; color: #164c5c; cursor: pointer; font: inherit; font-size: 0.85rem; }
 .graph-view-switch button[aria-pressed='true'] { background: linear-gradient(#28758b, #134a61); color: white; }

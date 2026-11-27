@@ -67,7 +67,17 @@ export function requestProteinMstComparison(file: File, hasHeader: boolean, prot
     return requestProteinAnalysis<ProteinComparisonMst>('compare-mst', file, hasHeader, signal, { protein_a: proteinA, protein_b: proteinB })
 }
 
-type GraphResponse = ({ html: string } | { image: Blob }) & { details?: ProteinDetails, nodeCount?: number }
+export interface NeighborhoodInfo {
+    node_limit: number | null
+    node_count: number
+    total_node_count: number
+    partial: boolean
+    extra_edges: [string, string][]
+    requested_distance: number
+    reached_distance: number
+}
+
+type GraphResponse = ({ html: string } | { image: Blob }) & { details?: ProteinDetails, nodeCount?: number, neighborhood?: NeighborhoodInfo }
 
 export interface ShortestPathResult {
     path: string[]
@@ -266,10 +276,10 @@ export async function requestDatasetSubgraph(
             }
             throw new Error(message)
         }
-        const result = await response.json() as { details: ProteinDetails, html: string, image_base64: string }
-        if (interactive) return { html: result.html, details: result.details }
+        const result = await response.json() as { details: ProteinDetails, html: string, image_base64: string, neighborhood?: NeighborhoodInfo }
+        if (interactive) return { html: result.html, details: result.details, neighborhood: result.neighborhood }
         const bytes = Uint8Array.from(atob(result.image_base64), character => character.charCodeAt(0))
-        return { image: new Blob([bytes], { type: 'image/png' }), details: result.details }
+        return { image: new Blob([bytes], { type: 'image/png' }), details: result.details, neighborhood: result.neighborhood }
     } catch (error) {
         if (timedOut && !signal.aborted) {
             throw new Error('La generación del subgrafo tardó más de 60 segundos. Prueba con una distancia menor o desactiva el modo interactivo.')
