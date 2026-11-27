@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import ProteinSelector from '../components/ProteinSelector.vue'
+import { useDatasetProteins } from '../composables/useDatasetProteins'
 import BackToMenu from '../components/BackToMenu.vue'
 import { formatCount, type Dataset } from '../datasets'
 import { useDatasetGraph } from '../composables/useDatasetGraph'
+import { useGeneAnnotation } from '../composables/useGeneAnnotation'
 
 defineProps<{ datasets: readonly Dataset[] }>()
 const dataset = defineModel<Dataset>({ required: true })
+const { proteins, loadingProteins, proteinListError } = useDatasetProteins(dataset)
 const emit = defineEmits<{ back: [] }>()
 const mode = ref<'neighborhood' | 'shortest-path'>('neighborhood')
 const origin = ref('')
@@ -16,6 +20,7 @@ const pickerOpen = ref(false)
 const pickerTrigger = ref<HTMLButtonElement | null>(null)
 
 const {
+  fullGraphNodeCount,
   graphHtml,
   selectedProtein,
   fullProteinDetails,
@@ -40,6 +45,32 @@ const {
   showGraph,
   clearGraph,
 } = useDatasetGraph()
+const { annotation, loadingAnnotation, annotationError, retryAnnotation } = useGeneAnnotation(
+  computed(() => mode.value === 'neighborhood' ? selectedProtein.value?.id : undefined),
+)
+const showFullGeneSummary = ref(false)
+watch(() => selectedProtein.value?.id, () => { showFullGeneSummary.value = false })
+const geneSummaryPreview = computed(() => {
+  const summary = annotation.value?.summary ?? ''
+  return summary.length > 280 ? `${summary.slice(0, 280).replace(/\s+\S*$/, '')}…` : summary
+})
+const neighborQuery = ref('')
+const neighborPage = ref(0)
+const neighborsPerPage = 25
+const filteredNeighbors = computed(() => {
+  const query = neighborQuery.value.trim().toLowerCase()
+  return (selectedProtein.value?.neighbors ?? []).filter(id => id.toLowerCase().includes(query))
+})
+const neighborPageCount = computed(() => Math.ceil(filteredNeighbors.value.length / neighborsPerPage))
+const visibleNeighbors = computed(() => filteredNeighbors.value.slice(
+  neighborPage.value * neighborsPerPage, (neighborPage.value + 1) * neighborsPerPage,
+))
+watch(selectedProtein, () => {
+  neighborQuery.value = ''
+  neighborPage.value = 0
+})
+watch(neighborQuery, () => { neighborPage.value = 0 })
+
 const nodeLimit = ref<number | null>(100)
 const interactiveLimit = 100
 const interactive = ref(true)
@@ -77,7 +108,7 @@ const viewerReady = computed(() => activeGraph.value === 'full' ? fullViewerRead
 const loadingGraph = computed(() => generatingGraph.value || (!!graphHtml.value && !viewerReady.value))
 const canControlGraph = computed(() => !!graphHtml.value && viewerReady.value && !loadingGraph.value)
 
-function controlGraph(action: 'zoom-in' | 'zoom-out' | 'fit') {
+function controlGraph(action: 'zoom-in' | 'zoom-out' | 'fit' | 'resize') {
   if (!canControlGraph.value) return
   const frame = activeGraph.value === 'full' ? graphFrame.value : subgraphFrame.value
   frame?.contentWindow?.postMessage({ type: 'prote-prote:graph-control', action }, '*')
@@ -88,9 +119,17 @@ function fitGraph() {
   pendingFit = window.requestAnimationFrame(() => controlGraph('fit'))
 }
 
+function resizeGraph() {
+  window.cancelAnimationFrame(pendingFit)
+  // Wait for the fullscreen styles and iframe viewport to settle before resizing the canvas.
+  pendingFit = window.requestAnimationFrame(() => {
+    pendingFit = window.requestAnimationFrame(() => controlGraph('resize'))
+  })
+}
+
 function onFullscreenChange() {
   isFullscreen.value = document.fullscreenElement === graphPanel.value
-  fitGraph()
+  resizeGraph()
 }
 
 async function toggleFullscreen() {
@@ -134,6 +173,23 @@ watch(subgraphHtml, (html, _, onCleanup) => {
   onCleanup(() => window.clearTimeout(timeout))
 })
 
+function syncNodeHighlights() {
+  const message = {
+    type: 'prote-prote:highlight-proteins',
+    origin: mode.value === 'shortest-path' ? origin.value.trim() : proteinId.value.trim(),
+    destination: mode.value === 'shortest-path' ? destination.value.trim() : '',
+  }
+  graphFrame.value?.contentWindow?.postMessage(message, '*')
+  subgraphFrame.value?.contentWindow?.postMessage(message, '*')
+}
+
+watch([mode, origin, destination, proteinId], syncNodeHighlights, { flush: 'post' })
+watch(() => dataset.value.name, () => {
+  proteinId.value = ''
+  origin.value = ''
+  destination.value = ''
+})
+
 function onViewerMessage(event: MessageEvent) {
   const fromFull = event.source === graphFrame.value?.contentWindow
   const fromSubgraph = event.source === subgraphFrame.value?.contentWindow
@@ -141,6 +197,13 @@ function onViewerMessage(event: MessageEvent) {
   if (event.data?.type === 'prote-prote:protein-selected') {
     if (generatingGraph.value || (activeGraph.value === 'full' ? !fromFull : !fromSubgraph)) return
     const details = event.data.details
+    const id = event.data.id ?? details?.id
+    if (typeof id !== 'string' || !id) return
+    if (mode.value === 'neighborhood') proteinId.value = id
+    else if (!origin.value.trim() || destination.value.trim()) {
+      origin.value = id
+      destination.value = ''
+    } else if (id !== origin.value.trim()) destination.value = id
     if (!details || typeof details.id !== 'string' || typeof details.degree !== 'number' || !Array.isArray(details.neighbors) || !details.neighbors.every((id: unknown) => typeof id === 'string') || typeof details.component !== 'string' || typeof details.component_size !== 'number') return
     if (fromFull) fullProteinDetails.value = details
     else subgraphProteinDetails.value = details
@@ -152,13 +215,14 @@ function onViewerMessage(event: MessageEvent) {
   } else if (event.source === subgraphFrame.value?.contentWindow) {
     subgraphViewerReady.value = true
   }
+  syncNodeHighlights()
   if (activeGraph.value === 'full' ? fromFull : fromSubgraph) fitGraph()
 }
 
 onMounted(() => {
   window.addEventListener('message', onViewerMessage)
   document.addEventListener('fullscreenchange', onFullscreenChange)
-  resizeObserver = new ResizeObserver(fitGraph)
+  resizeObserver = new ResizeObserver(resizeGraph)
   if (graphStage.value) resizeObserver.observe(graphStage.value)
 })
 onBeforeUnmount(() => {
@@ -174,7 +238,7 @@ watch(nodeLimit, (limit) => {
 
 function requestGraph(confirmInteractive = false) {
   const limit = nodeLimit.value
-  if (loadingGraph.value || typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 1500) return
+  if (loadingGraph.value || typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1) return
 
   if (interactive.value && limit > interactiveLimit && !confirmInteractive) {
     loadWarning.value?.showModal()
@@ -251,77 +315,76 @@ function dismissPickerOnBlur(event: FocusEvent) {
 <template>
   <section class="visualizer" :aria-label="`Visualización del dataset ${dataset.name}`">
     <div class="visualizer-grid">
-      <aside class="glass-panel parameters-panel">
-        <BackToMenu @back="emit('back')" />
-        <h2>Parámetros</h2>
-        <label class="field-label" for="node-limit">Límite máximo de nodos</label>
-        <input id="node-limit" class="protein-input" type="number" min="1" max="1500" placeholder="100" v-model.number="nodeLimit" />
-        <label class="field-label interactive-option">
-          <input v-model="interactive" type="checkbox" />
-          Modo interactivo
-        </label>
-        <div class="random-option">
+      <aside class="parameters-panel">
+        <section class="glass-panel parameter-section" aria-labelledby="prepare-network-title">
+          <BackToMenu @back="emit('back')" />
+          <h2 id="prepare-network-title">1. Preparar red</h2>
+          <label class="field-label" for="node-limit">Límite máximo de nodos</label>
+          <input id="node-limit" class="protein-input" type="number" min="1" placeholder="100" v-model.number="nodeLimit" />
           <label class="field-label interactive-option">
-            <input :checked="randomMode" type="checkbox" @change="requestRandomMode" />
-            Modo aleatorio
+            <input v-model="interactive" type="checkbox" />
+            Modo interactivo
           </label>
-        </div>
-        <button
-          class="graph-action dataset-graph-action"
-          type="button"
-          :disabled="loadingGraph || typeof nodeLimit !== 'number' || !Number.isInteger(nodeLimit) || nodeLimit < 1 || nodeLimit > 1500"
-          @click="requestGraph()"
-        >
-          {{ loadingGraph ? 'Generando…' : 'Generar grafo' }}
-        </button>
+          <div class="random-option">
+            <label class="field-label interactive-option">
+              <input :checked="randomMode" type="checkbox" @change="requestRandomMode" />
+              Modo aleatorio
+            </label>
+          </div>
+          <button
+            class="graph-action dataset-graph-action"
+            type="button"
+            :disabled="loadingGraph || typeof nodeLimit !== 'number' || !Number.isSafeInteger(nodeLimit) || nodeLimit < 1"
+            @click="requestGraph()"
+          >
+            {{ loadingGraph ? 'Generando…' : 'Generar grafo' }}
+          </button>
 
-        <div class="mode-switch" aria-label="Modo de exploración">
-          <button type="button" :aria-pressed="mode === 'neighborhood'" @click="mode = 'neighborhood'">Explorar entorno</button>
-          <button type="button" :aria-pressed="mode === 'shortest-path'" @click="mode = 'shortest-path'">Camino más corto</button>
-        </div>
+        </section>
 
-        <div v-show="mode === 'neighborhood'" class="mode-fields">
-          <label class="field-label" for="protein-id">Identificador de proteína</label>
-          <input id="protein-id" v-model="proteinId" class="protein-input" type="text" placeholder="Ejemplo: 7157" @keydown.enter="requestSubgraph" />
-
-          <div class="distance-control">
-            <div class="distance-heading">
-              <label class="field-label" for="distance-level">Distancia máxima</label>
-              <span class="level-badge" aria-hidden="true">Nivel {{ distanceLevel }}</span>
-            </div>
-            <input
-              id="distance-level"
-              v-model.number="distanceLevel"
-              class="distance-range"
-              type="range"
-              min="1"
-              max="3"
-              :aria-valuetext="`Nivel ${distanceLevel}`"
-              :style="{ '--range-fill': `${(distanceLevel - 1) * 50}%` }"
-            />
-            <div class="range-values" aria-hidden="true">
-              <span v-for="level in 3" :key="level" :class="{ 'current-level': level === distanceLevel }">{{ level }}</span>
-            </div>
+        <section class="glass-panel parameter-section" aria-labelledby="explore-network-title">
+          <h2 id="explore-network-title">2. Explorar entorno</h2>
+          <p v-if="loadingProteins" class="path-hint" role="status">Cargando proteínas…</p>
+          <p v-if="proteinListError" class="path-hint" role="alert">{{ proteinListError }}</p>
+          <div class="mode-switch" aria-label="Modo de exploración">
+            <button type="button" :aria-pressed="mode === 'neighborhood'" @click="mode = 'neighborhood'">Explorar entorno</button>
+            <button type="button" :aria-pressed="mode === 'shortest-path'" @click="mode = 'shortest-path'">Camino más corto</button>
           </div>
 
-          <button class="graph-action" type="button" :disabled="loadingGraph || !hasFullGraph || !proteinId.trim()" @click="requestSubgraph">
-            {{ generatingGraph ? 'Generando…' : 'Generar subgrafo' }}
-          </button>
-        </div>
+          <div v-show="mode === 'neighborhood'" class="mode-fields">
+            <ProteinSelector id="protein-id" v-model="proteinId" label="Identificador de proteína" :proteins="proteins" placeholder="Buscar proteína…" />
 
-        <div v-show="mode === 'shortest-path'" class="mode-fields">
-          <label class="field-label" for="origin-protein">Proteína de origen</label>
-          <input id="origin-protein" v-model="origin" class="protein-input" type="text" placeholder="Ejemplo: 7157" @keydown.enter="requestShortestPath" />
-          <button class="swap-button" type="button" aria-label="Intercambiar origen y destino" @click="swapProteins">
-            <span aria-hidden="true">⇅</span>
-          </button>
-          <label class="field-label" for="destination-protein">Proteína de destino</label>
-          <input id="destination-protein" v-model="destination" class="protein-input" type="text" placeholder="Ejemplo: 5728" @keydown.enter="requestShortestPath" />
-          <button class="graph-action" type="button" :disabled="loadingGraph || !hasFullGraph || !origin.trim() || !destination.trim()" @click="requestShortestPath">
-            {{ generatingGraph ? 'Buscando…' : 'Encontrar camino' }}
-          </button>
-          <p class="path-hint">Genera el grafo primero y consulta dos proteínas incluidas en él.</p>
-        </div>
+            <div class="hop-options" role="group" aria-label="Distancia máxima" aria-describedby="distance-description">
+              <button
+                v-for="level in 3"
+                :key="level"
+                type="button"
+                :aria-pressed="distanceLevel === level"
+                @click="distanceLevel = level"
+              >{{ level }} {{ level === 1 ? 'salto' : 'saltos' }}</button>
+            </div>
+            <p id="distance-description" class="distance-description">
+              {{ distanceLevel === 1 ? 'Incluye los vecinos conectados directamente.' : `Incluye vecinos hasta a ${distanceLevel === 2 ? 'dos' : 'tres'} conexiones de distancia.` }}
+            </p>
+
+            <button class="graph-action neighborhood-action" type="button" :disabled="loadingGraph || !hasFullGraph || !proteinId.trim()" @click="requestSubgraph">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" /></svg>
+              {{ generatingGraph ? 'Generando…' : 'Ver entorno' }}
+            </button>
+          </div>
+
+          <div v-show="mode === 'shortest-path'" class="mode-fields">
+            <ProteinSelector id="origin-protein" v-model="origin" label="Proteína de origen (azul)" :proteins="proteins" placeholder="Buscar origen…" />
+            <button class="swap-button" type="button" aria-label="Intercambiar origen y destino" @click="swapProteins">
+              <span aria-hidden="true">⇅</span>
+            </button>
+            <ProteinSelector id="destination-protein" v-model="destination" label="Proteína de destino (verde)" :proteins="proteins" placeholder="Buscar destino…" />
+            <button class="graph-action" type="button" :disabled="loadingGraph || !hasFullGraph || !origin.trim() || !destination.trim()" @click="requestShortestPath">
+              {{ generatingGraph ? 'Buscando…' : 'Encontrar camino' }}
+            </button>
+            <p class="path-hint">Selecciona dos nodos: origen azul y destino verde. Un tercer clic inicia otra pareja.</p>
+          </div>
+        </section>
       </aside>
 
       <section ref="graphPanel" class="glass-panel graph-panel" aria-label="Área del grafo">
@@ -333,11 +396,12 @@ function dismissPickerOnBlur(event: FocusEvent) {
                 class="dataset-trigger"
                 type="button"
                 :aria-expanded="pickerOpen"
+                :title="`Dataset ${dataset.name}`"
                 :disabled="loadingGraph"
                 aria-controls="visualizer-dataset-picker"
                 @click="pickerOpen = !pickerOpen"
               >
-                Dataset {{ dataset.name }}
+                <span>Dataset {{ dataset.name }}</span>
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
               </button>
               <Transition name="dataset-tray">
@@ -357,6 +421,13 @@ function dismissPickerOnBlur(event: FocusEvent) {
               <span v-if="dataset.nodes !== undefined">{{ formatCount(dataset.nodes) }} proteínas</span>
               <span v-if="dataset.edges !== undefined">{{ formatCount(dataset.edges) }} asociaciones</span>
             </div>
+            <p v-if="hasFullGraph" class="sample-notice" role="status">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10v1" /></svg>
+              <span>
+                {{ fullGraphNodeCount != null ? `Muestra: ${formatCount(fullGraphNodeCount)} proteínas` : `Muestra de hasta ${formatCount(generatedNodeLimit ?? 0)} proteínas` }} ·
+                {{ fullGraphNodeCount != null && fullGraphNodeCount === dataset.nodes ? 'Incluye todo el dataset.' : 'Vista parcial del dataset.' }}
+              </span>
+            </p>
           </div>
           <div class="graph-toolbar" aria-label="Herramientas del grafo">
             <button type="button" aria-label="Acercar" :disabled="!canControlGraph" @click="controlGraph('zoom-in')">
@@ -383,6 +454,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
             </button>
           </div>
         </header>
+
 
         <div v-if="hasSubgraph" class="graph-view-switch" aria-label="Vista del grafo">
           <button type="button" :disabled="generatingGraph" :aria-pressed="activeGraph === 'full'" @click="showGraph('full')">Grafo original</button>
@@ -445,14 +517,55 @@ function dismissPickerOnBlur(event: FocusEvent) {
       </section>
 
       <aside v-if="mode === 'neighborhood'" class="glass-panel details-panel">
-        <h2>Detalles de la proteína</h2>
-        <dl class="protein-details">
-          <div><dt>ID</dt><dd>{{ selectedProtein?.id ?? '--' }}</dd></div>
-          <div><dt>Grado</dt><dd>{{ selectedProtein?.degree ?? '--' }}</dd></div>
-          <div><dt>Vecinos</dt><dd class="protein-neighbors">{{ selectedProtein ? selectedProtein.neighbors.join(', ') || 'Sin vecinos' : '--' }}</dd></div>
-          <div><dt>Componente conectado</dt><dd>{{ selectedProtein?.component ?? '--' }}</dd></div>
-          <div><dt>Tamaño conectado</dt><dd>{{ selectedProtein ? formatCount(selectedProtein.component_size) : '--' }}</dd></div>
-        </dl>
+        <template v-if="selectedProtein">
+          <h2>Proteína {{ selectedProtein.id }}</h2>
+          <section class="gene-info" aria-label="Información del gen">
+            <p v-if="loadingAnnotation" class="gene-status" role="status">Consultando información del gen…</p>
+            <div v-else-if="annotationError">
+              <p class="gene-status" role="status">{{ annotationError }}</p>
+              <button class="gene-toggle" type="button" @click="retryAnnotation">Reintentar</button>
+            </div>
+            <template v-else-if="annotation">
+              <p v-if="annotation.symbol" class="gene-symbol">{{ annotation.symbol }}</p>
+              <p v-if="annotation.name" class="gene-name">{{ annotation.name }}</p>
+              <template v-if="annotation.summary">
+                <h3>Resumen del gen</h3>
+                <p class="gene-summary">{{ showFullGeneSummary ? annotation.summary : geneSummaryPreview }}</p>
+                <button v-if="annotation.summary.length > 280" class="gene-toggle" type="button" :aria-expanded="showFullGeneSummary" @click="showFullGeneSummary = !showFullGeneSummary">{{ showFullGeneSummary ? 'Ver menos' : 'Leer más' }}</button>
+              </template>
+              <p v-else class="gene-status">No hay un resumen disponible para este gen.</p>
+              <a class="gene-source" :href="`https://mygene.info/v3/gene/${encodeURIComponent(annotation.id)}?fields=symbol,name,summary`" target="_blank" rel="noopener noreferrer">Fuente: MyGene.info · texto original</a>
+            </template>
+            <p v-else class="gene-status">No se encontró información para este ID en MyGene.info. Se admiten identificadores de gen Entrez y Ensembl.</p>
+          </section>
+          <dl class="protein-details">
+            <div><dt>Conexiones directas</dt><dd>{{ formatCount(selectedProtein.neighbors.length) }}</dd></div>
+          </dl>
+          <details :key="`${activeGraph}-${selectedProtein.id}`" class="neighbors-section">
+            <summary>
+              <span>Ver proteínas conectadas</span>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+            </summary>
+            <div class="neighbors-content">
+            <template v-if="selectedProtein.neighbors.length">
+              <label class="field-label" for="neighbor-search">Buscar vecino por ID</label>
+              <input id="neighbor-search" v-model="neighborQuery" class="protein-input" type="search" placeholder="Filtrar vecinos…" autocomplete="off" />
+              <p class="neighbors-count" role="status">{{ formatCount(filteredNeighbors.length) }} de {{ formatCount(selectedProtein.neighbors.length) }} vecinos</p>
+              <ul v-if="visibleNeighbors.length" class="neighbors-list" aria-label="Vecinos encontrados" tabindex="0">
+                <li v-for="(neighbor, index) in visibleNeighbors" :key="`${neighbor}-${index}`">{{ neighbor }}</li>
+              </ul>
+              <p v-else class="neighbors-empty">No se encontraron vecinos con ese ID.</p>
+              <nav v-if="neighborPageCount > 1" class="neighbors-pagination" aria-label="Páginas de vecinos">
+                <button type="button" :disabled="neighborPage === 0" @click="neighborPage--">Anterior</button>
+                <span>{{ neighborPage + 1 }} / {{ neighborPageCount }}</span>
+                <button type="button" :disabled="neighborPage + 1 >= neighborPageCount" @click="neighborPage++">Siguiente</button>
+              </nav>
+            </template>
+            <p v-else class="neighbors-empty">Esta proteína no tiene vecinos.</p>
+            </div>
+          </details>
+        </template>
+        <p v-else class="details-intro">Haz clic en un nodo del grafo para ver los detalles de la proteína.</p>
       </aside>
       <aside v-else class="glass-panel details-panel">
         <h2>Resultados del camino</h2>
@@ -494,6 +607,8 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .visualizer {
   display: flex;
   flex: 1;
+  min-height: 0;
+  overflow: hidden;
   flex-direction: column;
   padding: clamp(10px, 2dvh, 20px) 4px 0;
   color: #12333f;
@@ -501,14 +616,16 @@ function dismissPickerOnBlur(event: FocusEvent) {
 
 .visualizer :is(button, input):focus-visible { outline: 2px solid #08485d; outline-offset: 3px; }
 
-.graph-stage { display: grid; flex: 1; min-width: 0; }
+.graph-stage { position: relative; display: grid; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .graph-stage > * { grid-area: 1 / 1; }
 
 .graph-frame {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
-  min-height: 360px;
+  min-height: 0;
   border: 0;
   background: transparent;
 }
@@ -526,6 +643,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
   padding: clamp(10px, 1.5vw, 20px);
 }
 
+.dataset-info { min-width: 0; }
 .dataset-selector { position: relative; width: fit-content; max-width: 100%; }
 .dataset-counts { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 0.9rem; }
 
@@ -533,6 +651,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
   padding: 4px 0;
   border: 0;
   background: transparent;
@@ -543,6 +662,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
   cursor: pointer;
 }
 
+.dataset-trigger span { min-width: 0; overflow-wrap: anywhere; }
 .dataset-trigger:hover { text-decoration: underline; text-underline-offset: 3px; }
 .dataset-trigger svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; }
 .dataset-trigger[aria-expanded='true'] svg { transform: rotate(180deg); }
@@ -583,15 +703,30 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .visualizer-grid {
   display: grid;
   flex: 1;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.9fr) minmax(0, 1.05fr);
   gap: clamp(10px, 1.4vw, 24px);
 }
 
 .parameters-panel {
   display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  flex-direction: column;
+  gap: clamp(10px, 1.4vw, 24px);
+}
+
+.parameter-section {
+  display: flex;
+  flex-shrink: 0;
   flex-direction: column;
   padding: clamp(10px, 2dvh, 22px) clamp(10px, 1.4vw, 22px);
 }
+.mode-fields :deep(.protein-selector) { margin-bottom: 12px; }
+.mode-fields :deep(label) { text-transform: none; font-size: 0.875rem; }
 
 .parameters-panel h2 {
   margin: 0 0 10px;
@@ -630,37 +765,39 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .protein-input { width: 100%; min-height: 34px; margin: 0 0 10px; border: 1px solid #8aafbb; border-radius: 8px; padding: 4px 10px; background: #f5fcff; color: inherit; font: inherit; font-size: 0.875rem; }
 .protein-input::placeholder { color: #49636d; opacity: 1; }
 
-.distance-control {
-  margin-bottom: 12px;
-  padding: 7px 10px 5px;
+.hop-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
   border: 1px solid #96bdc8;
-  border-radius: 12px;
-  background: linear-gradient(rgb(204 237 243 / 70%), rgb(174 221 230 / 50%));
-  box-shadow: inset 0 1px 0 rgb(218 248 251 / 45%);
+  border-radius: 11px;
+  background: #c6e7ee;
 }
 
-.distance-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 8px; }
-.distance-heading .field-label { margin: 0; }
-.level-badge { padding: 2px 7px; border-radius: 999px; background: #16566d; color: white; font-size: 0.75rem; font-weight: 700; }
-.distance-range {
-  --track-background: linear-gradient(to right, #166a82 var(--range-fill), #b9d7df var(--range-fill));
-  appearance: none;
-  display: block;
-  width: 100%;
-  height: 24px;
-  margin: 2px 0 0;
-  border-radius: 6px;
+.hop-options button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 3px;
   background: transparent;
+  color: #164c5c;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
   cursor: pointer;
 }
 
-.distance-range::-webkit-slider-runnable-track { height: 6px; border-radius: 999px; background: var(--track-background); }
-.distance-range::-moz-range-track { height: 6px; border-radius: 999px; background: var(--track-background); }
-.distance-range::-webkit-slider-thumb { appearance: none; width: 20px; height: 20px; margin-top: -7px; border: 2px solid #166a82; border-radius: 50%; background: white; }
-.distance-range::-moz-range-thumb { box-sizing: border-box; width: 20px; height: 20px; border: 2px solid #166a82; border-radius: 50%; background: white; }
-.range-values { display: flex; justify-content: space-between; color: #34535e; font-size: 0.8rem; }
-.range-values span { width: 20px; text-align: center; }
-.range-values .current-level { color: #11485d; font-weight: 700; }
+.hop-options button[aria-pressed='true'] {
+  background: linear-gradient(#28758b, #134a61);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%);
+  color: white;
+}
+
+.distance-description { margin: 6px 0 14px; color: #34535e; font-size: 0.8rem; line-height: 1.4; }
+.neighborhood-action { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.graph-action.neighborhood-action { width: 100%; }
+.neighborhood-action svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 
 .graph-action {
   width: min(100%, 190px);
@@ -709,9 +846,20 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .load-warning-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .load-warning-actions button { width: auto; margin: 0; }
 
-.graph-panel { display: flex; flex-direction: column; background: linear-gradient(155deg, rgb(180 231 238 / 58%), rgb(154 217 227 / 43%) 52%, rgb(171 230 233 / 54%)); }
-.graph-panel:fullscreen { padding: 20px; overflow: auto; background: #a5d6da; }
+.graph-panel { display: flex; flex-direction: column; overflow: hidden; background: linear-gradient(155deg, rgb(180 231 238 / 58%), rgb(154 217 227 / 43%) 52%, rgb(171 230 233 / 54%)); }
+.graph-panel:fullscreen { width: 100vw; height: 100dvh; padding: 20px; overflow: hidden; background: #a5d6da; }
+.graph-panel:fullscreen .graph-stage { min-height: 0; }
 .graph-panel:fullscreen .graph-image { max-height: calc(100dvh - 160px); }
+.sample-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 6px 0 0;
+  color: #34535e;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.sample-notice svg { width: 14px; height: 14px; flex: none; margin-top: 1px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .graph-view-switch { display: flex; align-self: center; gap: 4px; margin: 0 12px 8px; padding: 3px; border: 1px solid #96bdc8; border-radius: 11px; background: #c6e7ee; }
 .graph-view-switch button { border: 0; border-radius: 8px; padding: 5px 12px; background: transparent; color: #164c5c; cursor: pointer; font: inherit; font-size: 0.85rem; }
 .graph-view-switch button[aria-pressed='true'] { background: linear-gradient(#28758b, #134a61); color: white; }
@@ -738,26 +886,52 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .empty-graph h2 { margin: 0; font-size: clamp(1.15rem, 1.8vw, 1.85rem); font-weight: 700; line-height: 1.25; }
 .empty-graph p { max-width: 44ch; margin: clamp(8px, 1.6dvh, 20px) 0 0; font-size: clamp(1rem, 1.2vw, 1.2rem); line-height: 1.4; }
 
-.details-panel { padding: clamp(10px, 2dvh, 22px) clamp(10px, 1.4vw, 22px); }
+.details-panel { overflow-y: auto; overscroll-behavior: contain; padding: clamp(10px, 2dvh, 22px) clamp(10px, 1.4vw, 22px); }
 .details-panel h2 { margin: 0 0 clamp(8px, 1.5dvh, 18px); font-size: clamp(1.25rem, 1.65vw, 1.75rem); font-weight: 700; line-height: 1.15; }
 .details-intro { margin: 0 0 clamp(8px, 1.5dvh, 18px); color: #34535e; font-size: clamp(0.95rem, 1.05vw, 1.12rem); line-height: 1.4; }
+.gene-info { margin: 0 0 16px; padding-bottom: 14px; border-bottom: 1px solid rgb(43 100 104 / 25%); }
+.gene-symbol { width: fit-content; margin: 0 0 6px; padding: 3px 9px; border-radius: 999px; background: #16566d; color: white; font-weight: 700; }
+.gene-name { margin: 0 0 12px; font-size: 0.95rem; font-weight: 600; overflow-wrap: anywhere; }
+.gene-info h3 { margin: 0 0 5px; font-size: 0.85rem; }
+.gene-summary, .gene-status { margin: 0; color: #34535e; font-size: 0.85rem; line-height: 1.5; overflow-wrap: anywhere; }
+.gene-summary { max-height: 220px; overflow-y: auto; }
+.gene-toggle { display: block; margin: 5px 0; padding: 3px 0; border: 0; background: transparent; color: #164c5c; font: inherit; font-size: 0.8rem; text-decoration: underline; cursor: pointer; }
+.gene-source { display: inline-block; margin-top: 10px; color: #164c5c; font-size: 0.75rem; }
 .protein-details { margin: 0; }
 .protein-details div { display: flex; justify-content: space-between; gap: 8px; padding: 8px 2px; border-bottom: 1px solid rgb(43 100 104 / 25%); font-size: clamp(0.95rem, 1vw, 1.05rem); }
 .protein-details dt, .protein-details dd { margin: 0; }
 .protein-details dd { color: #34535e; }
 .protein-details dd { text-align: right; overflow-wrap: anywhere; min-width: 0; }
-.protein-neighbors { max-height: 160px; overflow-y: auto; }
+.neighbors-section { margin-top: 0; }
+.neighbors-section summary { display: flex; align-items: center; gap: 8px; padding: 12px 0; color: #164c5c; font-size: 0.9rem; font-weight: 700; list-style: none; cursor: pointer; }
+.neighbors-section summary::-webkit-details-marker { display: none; }
+.neighbors-section summary:focus-visible { outline: 2px solid #08485d; outline-offset: 3px; border-radius: 6px; }
+.neighbors-section summary svg { margin-left: auto; width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; }
+.neighbors-section[open] summary svg { transform: rotate(180deg); }
+.neighbors-content { padding-bottom: 4px; }
+.neighbors-section .field-label { display: block; }
+.neighbors-section .protein-input { margin-bottom: 6px; }
+.neighbors-count, .neighbors-empty { margin: 0 0 8px; color: #34535e; font-size: 0.8rem; line-height: 1.4; }
+.neighbors-list { max-height: 180px; overflow-y: auto; margin: 0; padding: 4px; border: 1px solid #96bdc8; border-radius: 10px; background: rgb(228 247 251 / 45%); list-style: none; }
+.neighbors-list li { padding: 6px 8px; border-bottom: 1px solid rgb(43 100 104 / 15%); overflow-wrap: anywhere; font-size: 0.875rem; }
+.neighbors-list li:last-child { border-bottom: 0; }
+.neighbors-list:focus-visible { outline: 2px solid #08485d; outline-offset: 3px; }
+.neighbors-pagination { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; font-size: 0.75rem; }
+.neighbors-pagination button { border: 1px solid #8aafbb; border-radius: 8px; padding: 5px 8px; background: #e4f7fb; color: #164c5c; font: inherit; cursor: pointer; }
+.neighbors-pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
 .path-hint { font-size: 0.8rem; }
 .path-route { overflow-wrap: anywhere; line-height: 1.5; max-height: 180px; overflow-y: auto; }
 
 @media (max-width: 850px) {
-  .visualizer-grid { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr); }
+  .visualizer-grid { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr); grid-template-rows: minmax(0, 3fr) minmax(0, 2fr); }
   .details-panel { grid-column: 1 / -1; }
 }
 
 @media (max-width: 560px) {
-  .visualizer-grid { grid-template-columns: 1fr; }
-  .graph-panel { min-height: 240px; }
+  .visualizer-grid { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: auto; overflow-y: auto; overscroll-behavior: contain; }
+  .parameters-panel { overflow: visible; }
+  .graph-panel { height: 50dvh; min-height: 280px; }
+  .details-panel { max-height: 60dvh; }
   .details-panel { grid-column: auto; }
 }
 </style>

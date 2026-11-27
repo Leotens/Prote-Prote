@@ -4,6 +4,7 @@ import { requestDatasetGraph, requestDatasetShortestPath, requestDatasetSubgraph
 import { getStoredDataset } from '../infrastructure/datasetsStorage'
 
 export function useDatasetGraph() {
+  const fullGraphNodeCount = ref<number | null>(null)
   const fullGraphHtml = ref('')
   const fullGraphImageUrl = ref('')
   const subgraphHtml = ref('')
@@ -27,6 +28,7 @@ export function useDatasetGraph() {
   let pendingGraph: AbortController | undefined
 
   function clearGraph() {
+    fullGraphNodeCount.value = null
     fullGraphHtml.value = ''
     subgraphHtml.value = ''
     graphError.value = ''
@@ -77,6 +79,7 @@ export function useDatasetGraph() {
       )
       if (controller.signal.aborted) return
 
+      fullGraphNodeCount.value = result.nodeCount ?? null
       if ('html' in result) {
         fullGraphHtml.value = result.html
       } else {
@@ -225,6 +228,7 @@ export function useDatasetGraph() {
   }
 
   return {
+    fullGraphNodeCount,
     graphHtml,
     selectedProtein,
     fullProteinDetails,

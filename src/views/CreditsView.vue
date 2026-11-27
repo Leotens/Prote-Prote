@@ -22,9 +22,9 @@ const students = ['Isabel Aponte Pablo', 'Alejandra Astocondor Bazan', 'Leo Dula
 </template>
 
 <style scoped>
-.credits { display: flex; flex: 1; flex-direction: column; padding: clamp(10px, 2dvh, 20px) 4px 0; color: #12333f; }
-.credits-content { display: grid; flex: 1; place-items: center; padding: 12px 0; }
-.credits-panel { width: min(100%, 880px); padding: clamp(24px, 4vw, 56px); text-align: center; }
+.credits { display: flex; flex: 1; min-height: 0; flex-direction: column; padding: clamp(10px, 2dvh, 20px) 4px 0; color: #12333f; }
+.credits-content { display: grid; flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); place-items: center; padding: 12px 0; }
+.credits-panel { max-height: 100%; overflow-y: auto; overscroll-behavior: contain; width: min(100%, 880px); padding: clamp(24px, 4vw, 56px); text-align: center; }
 .credits-logo { width: clamp(48px, 7vw, 76px); height: auto; margin-bottom: 12px; }
 h1 { margin: 0; color: #fff; font-size: clamp(1.8rem, 3vw, 2.65rem); line-height: 1.2; }
 h2 { margin: clamp(24px, 4dvh, 36px) 0 20px; color: #34535e; font-size: 1rem; font-weight: 400; }

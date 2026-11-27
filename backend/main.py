@@ -28,10 +28,11 @@ COMPARISON_COLORS = {
 
 PROTEIN_SELECTION_SCRIPT = """
 <script>
-  network.on('selectNode', function (event) {
+  network.on('click', function (event) {
+    if (!event.nodes.length) return;
     const node = nodes.get(event.nodes[0]);
-    if (node && node.protein_details) {
-      window.parent.postMessage({ type: 'prote-prote:protein-selected', details: node.protein_details }, '*');
+    if (node) {
+      window.parent.postMessage({ type: 'prote-prote:protein-selected', id: String(node.id), details: node.protein_details }, '*');
     }
   });
 </script>
@@ -88,8 +89,29 @@ EXPANDED_GRAPH_FOCUS_SCRIPT = """
 
 GRAPH_CONTROL_SCRIPT = """
 <script>
+  const originalNodeColors = new Map(nodes.get().map(function (node) { return [node.id, node.color]; }));
   window.addEventListener('message', function (event) {
-    if (event.source !== window.parent || !event.data || event.data.type !== 'prote-prote:graph-control') return;
+    if (event.source !== window.parent || !event.data) return;
+    if (event.data.type === 'prote-prote:highlight-proteins') {
+      nodes.update(nodes.getIds().map(function (id) {
+        const selectedColor = String(id) === event.data.origin ? '#1550bd'
+          : String(id) === event.data.destination ? '#20a464' : null;
+        return { id: id, color: selectedColor ? { background: selectedColor, border: selectedColor,
+          highlight: { background: selectedColor, border: selectedColor },
+          hover: { background: selectedColor, border: selectedColor } } : originalNodeColors.get(id) };
+      }));
+      network.redraw();
+      return;
+    }
+    if (event.data.type !== 'prote-prote:graph-control') return;
+    if (event.data.action === 'resize') {
+      const position = network.getViewPosition();
+      const scale = network.getScale();
+      network.setSize('100%', '100%');
+      network.redraw();
+      network.moveTo({ position: position, scale: scale, animation: false });
+      return;
+    }
     const scale = network.getScale();
     if (event.data.action === 'zoom-in') network.moveTo({ scale: Math.min(scale * 1.25, 5), animation: true });
     if (event.data.action === 'zoom-out') network.moveTo({ scale: Math.max(scale / 1.25, 0.1), animation: true });
@@ -371,7 +393,7 @@ def render_graph_image(nodes: list[str], edges: list[tuple[str, str]]) -> Respon
 def generate_graph(
     file: UploadFile,
     has_header: Annotated[bool, Form()],
-    node_limit: Annotated[int, Form(ge=1, le=1500)],
+    node_limit: Annotated[int, Form(ge=1)],
     interactive: Annotated[bool, Form()] = True,
     selection_seed: Annotated[int | None, Form()] = None,
 ):
@@ -381,7 +403,9 @@ def generate_graph(
     selected = set(nodes)
     visible_edges = [(source, target) for source, target in edges if source in selected and target in selected]
     if not interactive:
-        return render_graph_image(nodes, visible_edges)
+        response = render_graph_image(nodes, visible_edges)
+        response.headers["X-Graph-Node-Count"] = str(len(nodes))
+        return response
 
     net = Network(
         height="100vh",
@@ -436,7 +460,7 @@ def generate_graph(
     """
     document, closing_tag, tail = html.rpartition("</body>")
     html = document + ready_script + PROTEIN_SELECTION_SCRIPT + GRAPH_CONTROLS_SCRIPT + closing_tag + tail
-    return HTMLResponse(html)
+    return HTMLResponse(html, headers={"X-Graph-Node-Count": str(len(nodes))})
 
 
 @app.post("/api/datasets/subgraph")
@@ -445,7 +469,7 @@ def generate_subgraph(
     has_header: Annotated[bool, Form()],
     protein_id: Annotated[str, Form()],
     distance: Annotated[int, Form(ge=1, le=3)],
-    node_limit: Annotated[int, Form(ge=1, le=1500)],
+    node_limit: Annotated[int, Form(ge=1)],
     interactive: Annotated[bool, Form()] = True,
     include_details: Annotated[bool, Form()] = False,
     selection_seed: Annotated[int | None, Form()] = None,
@@ -1075,11 +1099,11 @@ def generate_shortest_path(
     has_header: Annotated[bool, Form()],
     origin: Annotated[str, Form()],
     destination: Annotated[str, Form()],
-    node_limit: Annotated[int, Form(ge=1, le=1500)],
+    node_limit: Annotated[int, Form(ge=1)],
     interactive: Annotated[bool, Form()] = True,
     selection_seed: Annotated[int | None, Form()] = None,
 ):
-    proteins, _, _ = read_dataset(file, has_header)
+    proteins, edges, _ = read_dataset(file, has_header)
     origin, destination = origin.strip(), destination.strip()
     if not origin or not destination:
         raise HTTPException(status_code=422, detail="Ingresa las proteínas de origen y destino.")
@@ -1099,7 +1123,7 @@ def generate_shortest_path(
 
     path_edges = list(zip(path, path[1:]))
     if interactive:
-        result["html"] = render_subgraph_html(path, path_edges, origin).body.decode("utf-8")
+        result["html"] = render_subgraph_html(path, path_edges, origin, comparison_node_details(proteins, edges, set(path)), {origin: "#1550bd", destination: "#20a464"}).body.decode("utf-8")
     else:
         result["image_base64"] = b64encode(render_graph_image(path, path_edges).body).decode("ascii")
     return result

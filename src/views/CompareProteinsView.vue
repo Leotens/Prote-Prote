@@ -529,7 +529,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .summary-footer button:hover, .subgraph-footer button:hover { filter: brightness(1.06); }
 .compare-grid { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(230px, 0.66fr) minmax(0, 3fr); align-items: stretch; gap: clamp(8px, 1vw, 16px); }
 .protein-column { display: grid; min-height: 0; grid-template-rows: 1fr 1fr; gap: clamp(8px, 1dvh, 12px); }
-.protein-card { padding: clamp(9px, 1vw, 14px); }
+.protein-card { overflow-y: auto; overscroll-behavior: contain; padding: clamp(9px, 1vw, 14px); }
 .protein-card h2 { margin: 0 0 3px; font-size: clamp(1.05rem, 1.3vw, 1.35rem); }
 .protein-id { display: inline-block; margin-bottom: 5px; padding: 3px 9px; border: 1px solid rgb(255 255 255 / 65%); border-radius: 999px; background: rgb(22 86 109 / 48%); color: white; font-size: 0.72rem; }
 .unselected { display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 2px; color: #34535e; }
@@ -538,7 +538,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .protein-card dl div { display: flex; justify-content: space-between; gap: 6px; padding: 4px 1px; border-bottom: 1px solid rgb(43 100 104 / 20%); font-size: 0.82rem; }
 .protein-card dd { margin: 0; color: #34535e; }
 .selected-protein { margin: 3px 0; color: #16566d; font-size: 0.82rem; font-weight: 700; text-align: center; }
-.summary-panel { container-type: inline-size; display: grid; width: 100%; height: 100%; min-height: 0; grid-template-rows: auto auto auto minmax(230px, 1fr) auto; align-self: stretch; align-content: stretch; padding: clamp(10px, 1.2vw, 18px); }
+.summary-panel { overflow-y: auto; overscroll-behavior: contain; container-type: inline-size; display: grid; width: 100%; height: 100%; min-height: 0; grid-template-rows: auto auto auto minmax(230px, 1fr) auto; align-self: stretch; align-content: stretch; padding: clamp(10px, 1.2vw, 18px); }
 .empty-summary-panel { height: 100%; align-self: stretch; grid-template-rows: auto minmax(130px, 1fr) auto auto; }
 .empty-comparison { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .empty-comparison svg { width: clamp(52px, 5vw, 74px); }
@@ -672,7 +672,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 @media (max-width: 900px) {
   .comparison-inputs { grid-template-columns: 1fr 1fr; }
   .compare-button { grid-column: 1 / -1; }
-  .compare-grid { flex: none; min-height: auto; grid-template-columns: 1fr; overflow: visible; }
+  .compare-grid { flex: 1; min-height: 0; grid-template-columns: 1fr; overflow-y: auto; overscroll-behavior: contain; }
   .protein-column { grid-template-columns: 1fr 1fr; grid-template-rows: none; }
   .summary-panel { height: auto; }
   .subgraph-panel { min-height: 500px; }
@@ -710,11 +710,10 @@ function dismissPickerOnBlur(event: FocusEvent) {
   .summary-footer button { min-height: 32px; padding-block: 5px; }
 }
 
-/* At very high browser zoom there is not enough vertical space to compress
-   every block safely. Keep the content readable and let the page scroll. */
+/* Keep the panels readable in short windows; scroll within the comparison area. */
 @media (max-width: 1200px) and (max-height: 650px) {
-  .compare { flex: none; min-height: auto; }
-  .compare-grid { flex: none; min-height: auto; align-items: start; }
+  .compare { flex: 1; min-height: 0; }
+  .compare-grid { flex: 1; min-height: 0; align-items: start; overflow-y: auto; overscroll-behavior: contain; }
   .protein-column { min-height: 0; grid-template-rows: auto auto; }
   .protein-card { min-height: 210px; }
   .summary-panel {

@@ -142,6 +142,8 @@ async function removeSelectedDataset() {
 .datasets {
   display: grid;
   flex: 1;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
   grid-template-columns: minmax(0, 2.15fr) minmax(210px, 1fr);
   gap: clamp(10px, 1.4vw, 22px);
   margin: clamp(10px, 2dvh, 20px) 0 0;
@@ -150,6 +152,8 @@ async function removeSelectedDataset() {
 
 .dataset-list,
 .dataset-card {
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: clamp(12px, min(2vw, 3dvh), 26px);
 }
 
@@ -232,6 +236,6 @@ async function removeSelectedDataset() {
 .dialog-actions .dialog-cancel { background: transparent; color: inherit; border-color: #7aafbd; }
 
 @media (max-width: 640px) {
-  .datasets { grid-template-columns: 1fr; margin-left: 0; }
+  .datasets { grid-template-columns: 1fr; grid-template-rows: repeat(2, minmax(0, 1fr)); margin-left: 0; }
 }
 </style>

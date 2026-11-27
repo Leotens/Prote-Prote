@@ -2,7 +2,7 @@ import json
 import unittest
 from base64 import b64decode
 from io import BytesIO
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from fastapi import HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
@@ -29,7 +29,8 @@ class ShortestPathTests(unittest.TestCase):
         self.assertEqual(result["path"], ["A", "D", "E"])
         self.assertEqual(result["length"], 2)
         self.assertGreaterEqual(result["elapsed_ms"], 0)
-        render.assert_called_once_with(["A", "D", "E"], [("A", "D"), ("D", "E")], "A")
+        render.assert_called_once_with(["A", "D", "E"], [("A", "D"), ("D", "E")], "A", ANY, {"A": "#1550bd", "E": "#20a464"})
+        self.assertEqual(render.call_args.args[3]["A"]["component_size"], 5)
 
     def test_same_protein_has_zero_length_and_one_node(self):
         result = self.query(destination="A")

@@ -30,3 +30,9 @@
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }
+
+/* Match component scrollbars to the glass panels. */
+.glass-panel, .parameters-panel, .visualizer-grid, .compare-grid {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(64 112 124 / 65%) transparent;
+}

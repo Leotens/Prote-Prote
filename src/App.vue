@@ -40,7 +40,7 @@ watchEffect(() => {
     <div
       :key="route.name"
       class="screen"
-      :class="{ 'compare-screen': route.name === 'compare' }"
+      :class="{ 'compare-screen': route.name === 'compare', 'panel-screen': route.name !== 'menu' }"
     >
       <p v-if="loadingDatasets" role="status">Recuperando datasets…</p>
       <p v-else-if="storageError" role="alert">{{ storageError }}</p>
@@ -96,6 +96,8 @@ watchEffect(() => {
   flex-direction: column;
   overflow: auto;
 }
+
+.panel-screen { overflow: hidden; }
 
 .compare-screen {
   scrollbar-color: rgb(64 112 124 / 72%) transparent;

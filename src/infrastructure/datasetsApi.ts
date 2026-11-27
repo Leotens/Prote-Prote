@@ -67,7 +67,7 @@ export function requestProteinMstComparison(file: File, hasHeader: boolean, prot
     return requestProteinAnalysis<ProteinComparisonMst>('compare-mst', file, hasHeader, signal, { protein_a: proteinA, protein_b: proteinB })
 }
 
-type GraphResponse = ({ html: string } | { image: Blob }) & { details?: ProteinDetails }
+type GraphResponse = ({ html: string } | { image: Blob }) & { details?: ProteinDetails, nodeCount?: number }
 
 export interface ShortestPathResult {
     path: string[]
@@ -211,7 +211,10 @@ export async function requestDatasetGraph(
     if (!response.ok) {
         throw new Error(`No se pudo generar el grafo (HTTP ${response.status}).`)
     }
-    return interactive ? { html: await response.text() } : { image: await response.blob() }
+    const countHeader = response.headers.get('X-Graph-Node-Count')
+    const count = countHeader === null ? NaN : Number(countHeader)
+    const nodeCount = Number.isSafeInteger(count) && count >= 0 ? count : undefined
+    return interactive ? { html: await response.text(), nodeCount } : { image: await response.blob(), nodeCount }
 }
 
 export async function requestDatasetSubgraph(
@@ -285,4 +288,24 @@ export async function uploadDataset(file: File, hasHeader: boolean): Promise<Upl
     }
 
     return response.json()
+}
+
+
+export interface GeneAnnotation {
+    id: string
+    symbol: string | null
+    name: string | null
+    summary: string | null
+}
+
+export async function requestGeneAnnotation(id: string, signal: AbortSignal): Promise<GeneAnnotation | null> {
+    // Exact gene IDs only: arbitrary graph labels must not become fuzzy biological matches.
+    if (!/^(?:[0-9]+|ENS[A-Z]*G[0-9]+)$/.test(id)) return null
+    const response = await fetch(`https://mygene.info/v3/gene/${encodeURIComponent(id)}?fields=symbol,name,summary`, { signal })
+    if (response.status === 404) return null
+    if (!response.ok) throw new Error('MyGene.info no está disponible en este momento.')
+    const data = await response.json() as Record<string, unknown>
+    const text = (value: unknown) => typeof value === 'string' && value.trim() ? value : null
+    const annotation = { id: text(data._id) ?? id, symbol: text(data.symbol), name: text(data.name), summary: text(data.summary) }
+    return annotation.symbol || annotation.name || annotation.summary ? annotation : null
 }

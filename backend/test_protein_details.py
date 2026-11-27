@@ -34,7 +34,7 @@ class ProteinDetailsTests(unittest.TestCase):
 
     def test_original_graph_can_publish_node_details(self):
         response = generate_graph(self.dataset(), False, 4, True)
-        self.assertIn(b"network.on('selectNode'", response.body)
+        self.assertIn(b"network.on('click'", response.body)
         self.assertIn(b'"component_size": 4', response.body)
 
     def test_original_and_neighborhood_graphs_accept_viewer_controls(self):
