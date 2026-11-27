@@ -284,8 +284,10 @@ def compare_dataset_proteins(
         center = result[f"protein_{side}"]["id"]
         colors = {node: COMPARISON_COLORS["shared"] for node in result["shared_neighbors"]}
         colors[center] = COMPARISON_COLORS[f"protein_{side}"]
+        graph_details = comparison_node_details(proteins, edges, set(graph["nodes"]))
         html = render_subgraph_html(
             graph["nodes"], graph["edges"], center,
+            details=graph_details,
             highlights=colors, default_color=COMPARISON_COLORS["exclusive"],
             edge_color=COMPARISON_COLORS["mst_edge"],
         )
@@ -1201,15 +1203,17 @@ def compare_dataset_proteins_mst(
     protein_a: Annotated[str, Form()],
     protein_b: Annotated[str, Form()],
 ):
-    proteins, _, _ = read_dataset(file, has_header)
+    proteins, edges, _ = read_dataset(file, has_header)
     result = compare_proteins_mst(proteins, protein_a, protein_b)
     for side in ("a", "b"):
         graph = result[f"graph_{side}"]
         center = result[f"protein_{side}"]["id"]
         colors = {node: COMPARISON_COLORS["shared"] for node in result["shared_neighbors"]}
         colors[center] = COMPARISON_COLORS[f"protein_{side}"]
+        graph_details = comparison_node_details(proteins, edges, set(graph["nodes"]))
         html = render_subgraph_html(
             graph["nodes"], graph["edges"], center,
+            details=graph_details,
             highlights=colors, default_color=COMPARISON_COLORS["exclusive"],
             edge_color=COMPARISON_COLORS["mst_edge"],
         )

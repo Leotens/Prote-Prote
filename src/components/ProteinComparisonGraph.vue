@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ComparisonGraph } from '../infrastructure/datasetsApi'
+import GeneAnnotationSummary from './GeneAnnotationSummary.vue'
+import type { ComparisonGraph, ProteinDetails } from '../infrastructure/datasetsApi'
 
 const props = defineProps<{ graph: ComparisonGraph, proteinId: string, side: 'A' | 'B' }>()
-const emit = defineEmits<{ ready: [side: 'A' | 'B'], fullscreen: [] }>()
+const emit = defineEmits<{ ready: [side: 'A' | 'B'] }>()
 const frame = ref<HTMLIFrameElement | null>(null)
 const stage = ref<HTMLDivElement | null>(null)
 const ready = ref(false)
 const error = ref('')
+const selectedProtein = ref<ProteinDetails | null>(null)
 let resizeObserver: ResizeObserver | undefined
 let pendingFit = 0
 let lastWidth = 0
@@ -28,6 +30,7 @@ function fitGraph(force = false) {
 watch(() => props.graph.html, (_, __, onCleanup) => {
   ready.value = false
   error.value = ''
+  selectedProtein.value = null
   const timeout = window.setTimeout(() => {
     if (!ready.value) {
       ready.value = true
@@ -48,6 +51,12 @@ function onMessage(event: MessageEvent) {
     emit('ready', props.side)
     fitGraph(true)
   }
+  if (event.data?.type === 'prote-prote:protein-selected') {
+    selectedProtein.value = event.data.details as ProteinDetails
+  }
+  if (event.data?.type === 'prote-prote:protein-cleared') {
+    selectedProtein.value = null
+  }
   if (event.data?.type === 'prote-prote:graph-image' && typeof event.data.image === 'string' && event.data.image.startsWith('data:image/png;base64,')) {
     const anchor = document.createElement('a')
     anchor.href = event.data.image
@@ -58,8 +67,19 @@ function onMessage(event: MessageEvent) {
   }
 }
 
-function fullscreen() {
-  emit('fullscreen')
+function clearSelection() {
+  selectedProtein.value = null
+  control('reset-focus')
+}
+
+async function fullscreen() {
+  try {
+    error.value = ''
+    if (document.fullscreenElement === stage.value) await document.exitFullscreen()
+    else await stage.value?.requestFullscreen()
+  } catch {
+    error.value = 'No se pudo abrir la pantalla completa en este navegador.'
+  }
 }
 
 onMounted(() => {
@@ -94,6 +114,15 @@ onBeforeUnmount(() => {
         <img src="/images/mascot.png" alt="" />
       </div>
     </div>
+    <aside v-if="selectedProtein" class="selected-protein-details" aria-live="polite">
+      <div>
+        <strong>Proteína {{ selectedProtein.id }}</strong>
+        <GeneAnnotationSummary :id="selectedProtein.id" compact />
+        <span>Vecinos: {{ selectedProtein.degree }}</span>
+        <span>Tamaño del grupo: {{ selectedProtein.component_size }}</span>
+      </div>
+      <button type="button" aria-label="Cerrar detalles y restaurar el grafo" @click="clearSelection">×</button>
+    </aside>
   </section>
 </template>
 
@@ -118,6 +147,18 @@ iframe { position: absolute; inset: 0; display: block; width: 100%; height: 100%
 .pending { visibility: hidden; }
 .graph-loading { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; }
 .graph-loading img { width: 110px; }
+.selected-protein-details { display: flex; width: 100%; flex: none; align-items: center; justify-content: space-between; gap: 9px; margin-top: 5px; padding: 5px 9px; border: 1px solid rgb(255 255 255 / 55%); border-radius: 10px; background: rgb(237 250 255 / 52%); color: #164c5c; }
+.selected-protein-details > div { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 3px 12px; }
+.selected-protein-details strong { color: #062b39; font-size: 0.76rem; font-weight: 900; }
+.selected-protein-details span { font-size: 0.76rem; }
+.selected-protein-details > button { width: 22px; height: 22px; flex: none; border-radius: 50%; background: rgb(22 86 109 / 14%); font-size: 1rem; line-height: 1; }
+.comparison-graph:fullscreen .selected-protein-details { gap: 14px; margin-top: 9px; padding: 12px 15px; border-radius: 12px; }
+.comparison-graph:fullscreen .selected-protein-details > div { gap: 7px 20px; }
+.comparison-graph:fullscreen .selected-protein-details :is(strong, span),
+.comparison-graph:fullscreen .selected-protein-details :deep(.gene-symbol),
+.comparison-graph:fullscreen .selected-protein-details :deep(.gene-name),
+.comparison-graph:fullscreen .selected-protein-details :deep(.gene-status) { font-size: 1rem; line-height: 1.3; }
+.comparison-graph:fullscreen .selected-protein-details > button { width: 26px; height: 26px; font-size: 1.2rem; }
 @media (max-width: 420px) {
   .graph-tools { margin-left: auto; gap: 2px; padding-inline: 4px; }
   button { width: 30px; height: 30px; }

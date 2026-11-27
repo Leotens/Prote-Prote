@@ -3,7 +3,7 @@ from io import BytesIO
 
 from fastapi import HTTPException, UploadFile
 
-from main import UnionFind, compare_dataset_proteins, compare_proteins, read_dataset
+from main import UnionFind, compare_dataset_proteins, compare_dataset_proteins_mst, compare_proteins, read_dataset
 
 
 class ProteinComparisonTests(unittest.TestCase):
@@ -46,6 +46,12 @@ class ProteinComparisonTests(unittest.TestCase):
     def test_endpoint_includes_elapsed_time(self):
         result = compare_dataset_proteins(self.dataset(), False, "A", "B")
         self.assertGreaterEqual(result["elapsed_ms"], 0)
+
+    def test_mst_endpoint_embeds_node_details_in_both_graphs(self):
+        result = compare_dataset_proteins_mst(self.dataset(), False, "A", "B")
+
+        self.assertIn('"protein_details"', result["graph_a"]["html"])
+        self.assertIn('"protein_details"', result["graph_b"]["html"])
 
     def test_empty_and_unknown_proteins_are_rejected(self):
         proteins, edges, _ = read_dataset(self.dataset(), False)

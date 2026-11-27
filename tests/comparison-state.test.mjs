@@ -107,6 +107,7 @@ test('summary toggles mount and remove the two MST graph viewers', async () => {
   const View = evaluate(compiled, {
     '../components/BackToMenu.vue': { default: Empty },
     '../components/GeneAnnotationSummary.vue': { default: Empty },
+    '../components/ScientificComparisonInsight.vue': { default: Empty },
     '../components/ProteinSelector.vue': { default: Empty },
     '../components/ProteinComparisonGraph.vue': { default: Graph },
     '../datasets': { formatCount: String },

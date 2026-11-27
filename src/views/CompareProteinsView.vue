@@ -4,6 +4,7 @@ import BackToMenu from '../components/BackToMenu.vue'
 import GeneAnnotationSummary from '../components/GeneAnnotationSummary.vue'
 import ProteinComparisonGraph from '../components/ProteinComparisonGraph.vue'
 import ProteinSelector from '../components/ProteinSelector.vue'
+import ScientificComparisonInsight from '../components/ScientificComparisonInsight.vue'
 import { useProteinComparison } from '../composables/useProteinComparison'
 import { formatCount, type Dataset } from '../datasets'
 import type { ProteinDetails } from '../infrastructure/datasetsApi'
@@ -94,9 +95,23 @@ const biologicalInterpretation = computed(() => {
     }
   }
   const sharedLabel = shared === 1 ? '1 vecino compartido' : `${shared} vecinos compartidos`
+  const neighborUnion = Math.max(1, result.protein_a.degree + result.protein_b.degree - shared)
+  const similarity = (shared / neighborUnion) * 100
+  if (similarity < 5) {
+    return {
+      title: 'Superposición baja entre entornos',
+      description: `Ambas proteínas comparten ${sharedLabel}, pero estos representan solo el ${similarity.toFixed(2)} % de sus vecinos diferentes. La coincidencia es limitada y no permite inferir una función común.`,
+    }
+  }
+  if (similarity <= 20) {
+    return {
+      title: 'Superposición moderada entre entornos',
+      description: `Ambas proteínas comparten ${sharedLabel} y el ${similarity.toFixed(2)} % de sus vecinos diferentes coincide. Esto sugiere una posible relación funcional que requiere evidencia adicional.`,
+    }
+  }
   return {
-    title: 'Interacción indirecta por vecinos',
-    description: `Ambas proteínas presentan una interacción indirecta mediante ${sharedLabel}, lo que evidencia una conexión entre sus entornos en la red.`,
+    title: 'Superposición alta entre entornos',
+    description: `Ambas proteínas comparten ${sharedLabel} y el ${similarity.toFixed(2)} % de sus vecinos diferentes coincide. Sus entornos son similares, aunque esto no confirma una interacción directa ni una función común.`,
   }
 })
 
@@ -306,7 +321,9 @@ function dismissPickerOnBlur(event: FocusEvent) {
           </div>
           <div v-else class="comparison-result">
             <div class="component-banner" :class="{ different: !comparisonResult.same_component }">
-              <span class="component-icon" aria-hidden="true">{{ comparisonResult.same_component ? '✓' : '!' }}</span>
+              <span class="component-icon material-symbols-outlined" aria-hidden="true">
+                {{ comparisonResult.same_component ? 'check_circle' : 'cancel' }}
+              </span>
               <div>
                 <strong>{{ comparisonResult.same_component ? 'Mismo grupo conectado' : 'Grupos conectados diferentes' }}</strong>
                 <small>
@@ -353,6 +370,14 @@ function dismissPickerOnBlur(event: FocusEvent) {
               <p>Interpretación biológica</p>
               <h2>{{ biologicalInterpretation.title }}</h2>
               <span>{{ biologicalInterpretation.description }}</span>
+              <ScientificComparisonInsight
+                :protein-a="comparisonResult.protein_a.id"
+                :protein-b="comparisonResult.protein_b.id"
+                :degree-a="comparisonResult.protein_a.degree"
+                :degree-b="comparisonResult.protein_b.degree"
+                :shared-neighbors="comparisonResult.shared_neighbors_count"
+                :same-component="comparisonResult.same_component"
+              />
             </article>
           </section>
 
@@ -440,14 +465,12 @@ function dismissPickerOnBlur(event: FocusEvent) {
               :protein-id="mstComparisonResult.protein_a.id"
               side="A"
               @ready="markMstGraphReady"
-              @fullscreen="requestFullscreen"
             />
             <ProteinComparisonGraph
               :graph="mstComparisonResult.graph_b"
               :protein-id="mstComparisonResult.protein_b.id"
               side="B"
               @ready="markMstGraphReady"
-              @fullscreen="requestFullscreen"
             />
           </div>
           <div v-else-if="comparisonSubgraphHtml" class="comparison-graph-area">
@@ -505,7 +528,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
               <h2 id="shared-neighbors-title">Vecinos compartidos</h2>
               <p>{{ comparisonResult?.shared_neighbors_count ?? 0 }} proteínas conectadas con A y B</p>
             </div>
-            <form method="dialog"><button aria-label="Cerrar lista">×</button></form>
+            <form method="dialog"><button aria-label="Cerrar lista"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></form>
           </header>
           <ul v-if="comparisonResult?.shared_neighbors.length">
             <li v-for="neighbor in comparisonResult.shared_neighbors" :key="neighbor">Proteína {{ neighbor }}</li>
@@ -567,9 +590,9 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .empty-comparison h1 { margin: 6px 0; font-size: clamp(1.3rem, 1.8vw, 1.8rem); }
 .empty-comparison p { max-width: 600px; margin: 0; font-size: clamp(0.85rem, 1vw, 1rem); line-height: 1.35; }
 .comparison-result { display: flex; min-height: max-content; flex-direction: column; justify-content: center; padding: 3px 0 8px; }
-.component-banner { display: flex; width: 100%; min-height: clamp(64px, 5.4vw, 82px); align-items: center; gap: clamp(9px, 1vw, 14px); padding: clamp(10px, 1vw, 15px) clamp(12px, 1.35vw, 20px); border: 1px solid rgb(255 255 255 / 65%); border-radius: 10px; background: rgb(174 244 226 / 62%); color: #15584e; text-align: left; }
-.component-banner.different { background: rgb(255 214 187 / 58%); color: #7b3c25; }
-.component-icon { display: grid; width: clamp(29px, 2.5vw, 36px); height: clamp(29px, 2.5vw, 36px); flex: none; place-items: center; border: 2px solid currentColor; border-radius: 50%; font-size: clamp(0.95rem, 1.2vw, 1.15rem); font-weight: 800; }
+.component-banner { display: flex; width: 100%; min-height: clamp(64px, 5.4vw, 82px); align-items: center; gap: clamp(9px, 1vw, 14px); padding: clamp(10px, 1vw, 15px) clamp(12px, 1.35vw, 20px); border: 1px solid #d9ffff; border-radius: 10px; background: #a9e4e1; color: #075f63; text-align: left; }
+.component-banner.different { border-color: rgb(255 255 255 / 65%); background: rgb(255 214 187 / 58%); color: #7b3c25; }
+.component-icon { display: grid; width: clamp(29px, 2.5vw, 36px); height: clamp(29px, 2.5vw, 36px); flex: none; place-items: center; color: currentColor; font-family: 'Material Symbols Outlined'; font-size: clamp(1.75rem, 2.4vw, 2.15rem); font-variation-settings: 'FILL' 0, 'wght' 450, 'GRAD' 0, 'opsz' 40; line-height: 1; }
 .component-banner div { display: grid; gap: 2px; }
 .component-banner strong { font-size: clamp(0.82rem, 0.92vw, 0.95rem); overflow-wrap: anywhere; }
 .component-banner small { color: #294d57; font-size: clamp(0.68rem, 0.78vw, 0.8rem); overflow-wrap: anywhere; }
@@ -634,14 +657,16 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .expanded-warning-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .expanded-warning-actions button { border: 1px solid #8aafbb; border-radius: 999px; padding: 8px 16px; background: #f5fcff; color: #164c5c; cursor: pointer; font: inherit; }
 .expanded-warning-actions button:last-child { background: linear-gradient(#28758b, #134a61); color: white; }
-.shared-neighbors-dialog { width: min(470px, calc(100% - 32px)); max-height: min(620px, calc(100dvh - 40px)); padding: 0; border: 1px solid #8aafbb; border-radius: 18px; background: #e4f7fb; color: #12333f; box-shadow: 0 12px 36px rgb(12 76 103 / 30%); }
+.shared-neighbors-dialog { width: min(470px, calc(100% - 32px)); max-height: min(620px, calc(100dvh - 40px)); padding: 0; border: 1px solid #16566d; border-radius: 7px; overflow: hidden; background: #fff; color: #12333f; box-shadow: 0 18px 52px rgb(5 47 63 / 38%); }
 .shared-neighbors-dialog::backdrop { background: rgb(18 51 63 / 55%); backdrop-filter: blur(2px); }
-.shared-neighbors-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 12px; border-bottom: 1px solid rgb(22 107 131 / 22%); }
-.shared-neighbors-dialog h2 { margin: 0; font-size: 1.2rem; }
-.shared-neighbors-dialog header p { margin: 3px 0 0; color: #34535e; font-size: 0.82rem; }
-.shared-neighbors-dialog header button { display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 50%; background: rgb(22 86 109 / 12%); color: #164c5c; cursor: pointer; font: inherit; font-size: 1.3rem; }
+.shared-neighbors-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 11px 13px; border-bottom: 0; background: #16566d; color: #fff; }
+.shared-neighbors-dialog h2 { margin: 0; font-size: 1.05rem; }
+.shared-neighbors-dialog header p { margin: 3px 0 0; color: #d9f3f7; font-size: 0.78rem; }
+.shared-neighbors-dialog header button { display: grid; width: 27px; height: 27px; place-items: center; border: 0; border-radius: 3px; padding: 0; background: transparent; color: #fff; cursor: pointer; }
+.shared-neighbors-dialog header button:hover { background: rgb(255 255 255 / 18%); }
+.shared-neighbors-dialog header button .material-symbols-outlined { font-family: 'Material Symbols Outlined'; font-size: 19px; font-variation-settings: 'FILL' 0, 'wght' 550, 'GRAD' 0, 'opsz' 24; }
 .shared-neighbors-dialog ul { display: grid; max-height: 430px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 7px; margin: 0; padding: 14px 20px 20px; overflow-y: auto; list-style: none; }
-.shared-neighbors-dialog li { border: 1px solid rgb(138 175 187 / 55%); border-radius: 9px; padding: 7px 10px; background: rgb(255 255 255 / 45%); font-size: 0.82rem; }
+.shared-neighbors-dialog li { border: 1px solid rgb(138 175 187 / 70%); border-radius: 3px; padding: 7px 10px; background: #fff; font-size: 0.82rem; }
 .empty-shared-list { margin: 0; padding: 22px 20px; color: #34535e; }
 .graph-toolbar { display: flex; align-items: center; gap: 3px; padding: 3px 6px; border: 1px solid rgb(205 240 246 / 55%); border-radius: 12px; background: linear-gradient(rgb(203 237 243 / 82%), rgb(161 219 232 / 72%)); box-shadow: 0 3px 8px rgb(12 76 103 / 15%); }
 .graph-toolbar button { display: grid; width: 32px; height: 32px; place-items: center; border: 0; border-radius: 7px; padding: 0; background: transparent; color: #154858; }
@@ -660,7 +685,7 @@ function dismissPickerOnBlur(event: FocusEvent) {
 .graph-loading-overlay { position: absolute; z-index: 2; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgb(181 229 237 / 82%); color: #164c5c; font-weight: 700; }
 .loading-spinner { width: 24px; height: 24px; border: 3px solid rgb(22 76 92 / 20%); border-top-color: #16566d; border-radius: 50%; animation: comparison-spin 700ms linear infinite; }
 @keyframes comparison-spin { to { transform: rotate(360deg); } }
-.graph-legend { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 7px 16px; padding: 8px 4px 3px; border-top: 2px solid rgb(9 47 61 / 32%); color: #042936; font-size: 0.8rem; font-weight: 900; }
+.graph-legend { display: flex; flex: 1; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 7px 16px; padding: 8px 4px 3px; border-top: 2px solid rgb(9 47 61 / 32%); color: #042936; font-size: 0.72rem; font-weight: 900; }
 .graph-legend strong { margin-right: 0; padding-right: 16px; border-right: 2px solid rgb(6 43 57 / 58%); color: #031f2a; font-weight: 950; }
 .graph-legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .legend-dot { display: inline-block; width: 13px; height: 13px; border: 1px solid rgb(255 255 255 / 90%); border-radius: 50%; box-shadow: 0 0 0 1px rgb(9 47 61 / 25%); }
